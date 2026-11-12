@@ -34,12 +34,19 @@ const BUSY_STATES = ["chatting", "planning", "building", "reviewing"];
 const REST_STATES = ["ready", "awaiting_approval", "done", "stopped", "failed"];
 const AUTH_WORDS = { claude_login: "Signed in through Claude Code", api_key: "Billing: API key" };
 const MODEL_CHOICES = [["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+const PRESET_WORDS = {
+  lean: ["Lean", "Least usage: Sonnet plans, Haiku reviews, low effort for workers"],
+  balanced: ["Balanced", "The default: Opus plans, Sonnet builds and reviews, medium effort"],
+  thorough: ["Thorough", "Most careful and most usage: high effort, Opus also reviews"],
+};
 const EFFORT_CHOICES = [["", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra high"], ["max", "Max"]];
 
 const $ = (id) => document.getElementById(id);
 const panels = {};   // agent id -> { root, log, role, number, composer, input, hasWorked }
 let settings = null; // the current settings, as the Rust side last confirmed them
-let defaults = null; // the settings the app started with, for "Reset to defaults"
+let defaults = null; // the built-in defaults, for "Reset to defaults"
+let runCost = 0;     // API-equivalent dollars the agents of this run have used
+let runTokens = 0;   // tokens the agents of this run have used, all kinds together
 let runId = null;    // the run this window is showing
 let runState = null;
 let nextSeq = 0;     // sequence number of the next event we expect for this run
@@ -134,7 +141,9 @@ function refreshModelChips() {
 function setStatus(panel, status) {
   panel.root.dataset.status = status;
   panel.root.querySelector(".status").textContent = STATUS_WORDS[status] || status;
-  if (status === "done") panel.hasWorked = true;
+  // "error" can mean it stopped at a turn limit or the cap; its session is kept, so it
+  // can be told to continue. (If it never started, the Rust side says so.)
+  if (status === "done" || status === "error") panel.hasWorked = true;
 }
 
 // A message box is usable when nothing is running and the agent has something
@@ -298,13 +307,43 @@ function handle(event) {
       add(panel, el("div", "problem", event.message));
       break;
     case "result":
-      if (event.cost_usd != null) {
-        add(panel, el("div", "cost", "Usage worth $" + event.cost_usd.toFixed(2) + " over " + (event.turns ?? "?") + " turns"));
-      }
+      showUsage(panel, event);
       break;
     case "plan": showPlan(panel, event); break;
     case "review": showReview(panel, event); break;
   }
+}
+
+// --- Usage ------------------------------------------------------------------------
+
+// 45210 -> "45.2k"
+function count(tokens) {
+  if (tokens < 1000) return String(tokens);
+  if (tokens < 1000000) return (tokens / 1000).toFixed(1) + "k";
+  return (tokens / 1000000).toFixed(2) + "M";
+}
+
+// One line per finished session, and a running total for the whole run in the top bar.
+function showUsage(panel, event) {
+  const t = event.tokens;
+  const total = t.input_tokens + t.output_tokens + t.cache_read_input_tokens + t.cache_creation_input_tokens;
+  const parts = [
+    count(t.cache_read_input_tokens) + " read from cache",
+    count(t.input_tokens + t.cache_creation_input_tokens) + " new input",
+    count(t.output_tokens) + " output",
+  ];
+  let line = "Tokens: " + parts.join(", ") + ". " + (event.turns ?? "?") + " turns";
+  if (event.cost_usd != null) line += ", worth $" + event.cost_usd.toFixed(2) + " at API prices";
+  const node = el("div", "cost", line + ".");
+  node.title = "Cache reads are the cheap kind: the part of the prompt that was the same as the turn before.";
+  add(panel, node);
+
+  runTokens += total;
+  runCost += event.cost_usd || 0;
+  const usage = $("run-usage");
+  usage.hidden = false;
+  usage.textContent = "This run: " + count(runTokens) + " tokens" + (runCost > 0 ? ", $" + runCost.toFixed(2) : "");
+  usage.title = "API-equivalent cost. On a Claude plan login this is a measure of how much of your limits the run used.";
 }
 
 // Every event has a sequence number. Showing them strictly in order, each exactly
@@ -326,6 +365,9 @@ function show(id) {
   runId = id;
   nextSeq = 0;
   runState = null;
+  runCost = 0;
+  runTokens = 0;
+  $("run-usage").hidden = true;
   remember("agent-console-run", id);
   resetPanels();
   return catchUp();
@@ -366,7 +408,15 @@ $("demo").addEventListener("change", () => remember("agent-console-demo", $("dem
 
 const SETTINGS_ROWS = [["planner", "Planner", "plan-hue"], ["worker", "Workers", "build-hue"], ["reviewer", "Reviewers", "review-hue"]];
 
-function buildSettingsForm() {
+function buildSettingsForm(presets) {
+  for (const { preset, settings: values } of presets) {
+    const [label, description] = PRESET_WORDS[preset] || [preset, ""];
+    const button = el("button", "", label);
+    button.type = "button";
+    button.title = description;
+    button.addEventListener("click", () => fillSettingsForm(values));
+    $("presets").append(button);
+  }
   const grid = $("settings-roles");
   for (const [key, label, hue] of SETTINGS_ROWS) {
     grid.append(el("span", "role " + hue, label));
@@ -405,6 +455,7 @@ function fillSettingsForm(values) {
     $("effort-" + key).value = values[key].effort || "";
   }
   $("budget").value = values.max_budget_usd ?? "";
+  $("use-mcp").checked = values.use_mcp_servers;
   $("settings-notice").textContent = "";
 }
 
@@ -419,6 +470,7 @@ function readSettingsForm() {
   }
   const budget = $("budget").value.trim();
   values.max_budget_usd = budget === "" ? null : Number(budget);
+  values.use_mcp_servers = $("use-mcp").checked;
   return values;
 }
 
@@ -441,7 +493,7 @@ $("settings-form").addEventListener("submit", async (submitted) => {
   settings = info.settings;
   defaults = info.default_settings;
   $("auth-chip").textContent = AUTH_WORDS[info.auth] || info.auth;
-  buildSettingsForm();
+  buildSettingsForm(info.presets);
   buildPanels(info.agents);
   resetPanels();
   setRunState(null);

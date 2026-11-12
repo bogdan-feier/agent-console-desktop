@@ -5,6 +5,8 @@
 //! program; `demo::DemoRunner` plays a script. The orchestrator only knows the
 //! trait, so it works with either.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -28,6 +30,13 @@ pub struct AgentError(pub String);
 
 #[async_trait]
 pub trait AgentRunner: Send + Sync {
+    /// How long to wait between starting two agents that run in parallel. Zero
+    /// unless the runner benefits from a gap (see `PARALLEL_START_GAP` in config.rs).
+    /// A method with a body like this is a default: types may override it.
+    fn parallel_start_gap(&self) -> Duration {
+        Duration::ZERO
+    }
+
     /// Run one session to completion, emitting text and tool events on `run`.
     ///
     /// `resume` continues an earlier session, so the agent remembers its work.

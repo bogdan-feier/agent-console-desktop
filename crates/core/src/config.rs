@@ -4,6 +4,8 @@
 //! agents are and what they are allowed to do; `orchestrator.rs` decides the
 //! order they run in.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -62,25 +64,47 @@ pub const CHECK_COMMANDS: &[&str] = &[
     "Bash(git diff *)",
 ];
 
+// --- Limits that keep usage down ------------------------------------------------
+
+/// Most assistant turns (one reply, usually with tool calls) a session may take before
+/// it stops. A stopped agent can be told to continue from its message box.
+pub const PLANNER_MAX_TURNS: u32 = 30;
+pub const WORKER_MAX_TURNS: u32 = 60;
+pub const REVIEWER_MAX_TURNS: u32 = 20;
+pub const CHAT_MAX_TURNS: u32 = 20;
+
+/// Delay between starting two agents that run in parallel. Their prompts start the
+/// same way, and a prompt-cache entry only becomes usable once the first request has
+/// started answering, so the second agent can read the cached prefix instead of
+/// paying to write it again.
+pub const PARALLEL_START_GAP: Duration = Duration::from_secs(5);
+
 // --- Role instructions -------------------------------------------------------
-// Added on top of Claude Code's normal system prompt for that agent.
+// Added on top of Claude Code's normal system prompt for that agent. Each one asks
+// the agent to work economically: every file it reads and every tool result is sent
+// back to the model on each following turn, so they add up.
 
 const PLANNER_INSTRUCTIONS: &str = "\
-You are the planner in a small team: you plan, 2 workers implement, reviewers check.
+You are the planner in a small team: you plan, up to 2 workers implement, reviewers check.
 You cannot edit files. Explore the project with Read, Grep and Glob, then produce a plan.
 
 Rules for the plan:
-- Split the request into at most 2 tasks. The tasks run AT THE SAME TIME in the same
-  folder, so no file may appear in more than one task. If the request cannot be split
-  safely, return a single task.
+- Use ONE task unless the work clearly splits into two independent parts of real size.
+  Every extra task starts another worker and another reviewer, which costs usage.
+- With two tasks, they run AT THE SAME TIME in the same folder, so no file may appear in
+  more than one task.
 - Each task goes to a worker that has not seen this conversation. Write instructions that
-  stand alone: what to change, the expected behaviour, and which tests to add.
+  stand alone: what to change, the expected behaviour, and which tests to add. Name the
+  functions and parts of files to change, so the worker does not have to search for them.
 - List every file the worker may create or edit in \"files\". Give each task its own test file.
-- Prefer the simplest design that satisfies the request. Do not add scope.";
+- Prefer the simplest design that satisfies the request. Do not add scope.
+
+Work economically: find things with Grep and Glob before reading, read only the parts of
+files you need, and do not re-read files you have already seen in this session.";
 
 const WORKER_INSTRUCTIONS: &str = "\
 You are a worker in a small team. You implement exactly one task from an approved plan.
-Another worker is editing other files in this folder at the same time.
+Another worker may be editing other files in this folder at the same time.
 
 Rules:
 - Create or edit ONLY the files listed for your task.
@@ -89,39 +113,51 @@ Rules:
 - Do not commit, push, or add dependencies.
 - If the task is unclear or needs a file that is not on your list, stop and say so.
 
-Finish with a short report: what you changed (file by file), which tests you added and
-their result, and anything you skipped or are unsure about.";
+Work economically: find things with Grep and Glob before reading, read only the parts of
+files you need, and do not re-read files you have already seen in this session.
+
+Finish with a short report of at most 10 lines: what you changed (file by file), which tests
+you added and their result, and anything you skipped or are unsure about.";
 
 const REVIEWER_INSTRUCTIONS: &str = "\
 You are a reviewer in a small team. You check one worker's finished task. You cannot edit files.
 
 Steps:
-1. Read every file listed for the task in full. Use `git diff` if the project is a git repo.
-2. Run the tests and the linter if the project has them.
+1. Start from the changes included in the prompt. Open a file only when the changes alone
+   do not give enough context. If no changes are included, read the task's files.
+2. Run only the task's own test file, not the whole suite, unless the changes touch code
+   that other parts of the project use.
 3. Check: does it do what the task asked and nothing extra? Is the new behaviour tested?
    Edge cases (empty input, None, large input)? Does it follow the project's CLAUDE.md?
+
+Work economically: read only what you need.
 
 Verdict \"approve\" only if there is nothing that must be fixed. Put each required fix in
 \"must_fix\" as \"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".";
 
 const PLANNER_CHAT_INSTRUCTIONS: &str = "\
-You are the planner in a small team: you plan, 2 workers implement in parallel, reviewers check.
-Right now you are brainstorming with the user, before or between plans. You cannot edit files.
-Explore the project with Read, Grep and Glob so the discussion is grounded in the real code.
-Discuss approaches and trade-offs, point out risks, and ask clarifying questions. Keep replies
-short and concrete. Do not write out a full plan: the user presses \"Make plan\" when ready.";
+You are the planner in a small team: you plan, up to 2 workers implement in parallel, reviewers
+check. Right now you are brainstorming with the user, before or between plans. You cannot edit
+files. Look at the project with Read, Grep and Glob when the question needs it, so the
+discussion is grounded in the real code. Discuss approaches and trade-offs, point out risks,
+and ask clarifying questions. Keep replies short and concrete. Do not write out a full plan:
+the user presses \"Make plan\" when ready.
+
+Work economically: search before reading, read only the parts you need, and reuse what you
+already read earlier in this conversation instead of reading it again.";
 
 const WORKER_CHAT_INSTRUCTIONS: &str = "\
 You are a worker in a small team and you already worked on a task in this session.
 The user is now talking to you directly. Answer their questions, or make the changes they ask for.
 Stay within the files of your task unless the user names other files. Another worker may be
 editing other files in this folder. Do not commit, push, or add dependencies.
-If you change code, run the relevant tests and say what you changed.";
+If you change code, run the relevant tests and say briefly what you changed.
+Reuse what you already know from this session instead of reading files again.";
 
 const REVIEWER_CHAT_INSTRUCTIONS: &str = "\
 You are a reviewer in a small team and you already reviewed a worker's task in this session.
-The user is now asking you follow-up questions. Answer them, using the code as evidence.
-You cannot edit files.";
+The user is now asking you follow-up questions. Answer them briefly, using the code as evidence.
+You cannot edit files. Reuse what you already read in this session instead of reading it again.";
 
 // --- Shapes of the structured answers ----------------------------------------
 // The planner and reviewers must answer with JSON matching these schemas, so
@@ -229,6 +265,10 @@ pub struct AgentSpec {
     pub output_schema: Option<Value>,
     /// Spending cap for this session, in US dollars.
     pub max_budget_usd: Option<f64>,
+    /// Most assistant turns this session may take.
+    pub max_turns: u32,
+    /// Whether the session loads the MCP servers configured in Claude Code.
+    pub use_mcp_servers: bool,
     /// True when the user is talking to the agent directly, rather than giving it
     /// a task from the plan.
     pub chat: bool,
@@ -247,6 +287,8 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         allowed: READ_TOOLS.to_vec(),
         output_schema: Some(plan_schema()),
         max_budget_usd: settings.max_budget_usd,
+        max_turns: PLANNER_MAX_TURNS,
+        use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
 }
@@ -256,6 +298,7 @@ pub fn planner_chat(settings: &Settings) -> AgentSpec {
     AgentSpec {
         instructions: PLANNER_CHAT_INSTRUCTIONS,
         output_schema: None,
+        max_turns: CHAT_MAX_TURNS,
         chat: true,
         ..planner(settings)
     }
@@ -274,13 +317,20 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
         allowed: [READ_TOOLS, EDIT_TOOLS, CHECK_COMMANDS].concat(),
         output_schema: None,
         max_budget_usd: settings.max_budget_usd,
+        max_turns: WORKER_MAX_TURNS,
+        use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
 }
 
 /// Worker `number` when the user talks to it directly.
 pub fn worker_chat(settings: &Settings, number: usize) -> AgentSpec {
-    AgentSpec { instructions: WORKER_CHAT_INSTRUCTIONS, chat: true, ..worker(settings, number) }
+    AgentSpec {
+        instructions: WORKER_CHAT_INSTRUCTIONS,
+        max_turns: CHAT_MAX_TURNS,
+        chat: true,
+        ..worker(settings, number)
+    }
 }
 
 /// Reviewer `number`, which checks worker `number`.
@@ -296,6 +346,8 @@ pub fn reviewer(settings: &Settings, number: usize) -> AgentSpec {
         allowed: [READ_TOOLS, CHECK_COMMANDS].concat(),
         output_schema: Some(review_schema()),
         max_budget_usd: settings.max_budget_usd,
+        max_turns: REVIEWER_MAX_TURNS,
+        use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
 }
@@ -305,6 +357,7 @@ pub fn reviewer_chat(settings: &Settings, number: usize) -> AgentSpec {
     AgentSpec {
         instructions: REVIEWER_CHAT_INSTRUCTIONS,
         output_schema: None,
+        max_turns: CHAT_MAX_TURNS,
         chat: true,
         ..reviewer(settings, number)
     }
@@ -348,6 +401,15 @@ mod tests {
             let can_edit = spec.tools.contains(&"Edit") || spec.tools.contains(&"Write");
             assert_eq!(can_edit, spec.role == Role::Worker, "{}", spec.id);
         }
+    }
+
+    #[test]
+    fn chats_have_a_lower_turn_limit_than_tasks() {
+        let settings = defaults();
+        assert_eq!(worker(&settings, 1).max_turns, WORKER_MAX_TURNS);
+        assert_eq!(worker_chat(&settings, 1).max_turns, CHAT_MAX_TURNS);
+        assert_eq!(planner_chat(&settings).max_turns, CHAT_MAX_TURNS);
+        assert!(!planner(&settings).use_mcp_servers, "MCP servers are off by default");
     }
 
     #[test]

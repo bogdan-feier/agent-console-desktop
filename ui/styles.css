@@ -200,3 +200,12 @@ select {
 .budget input { width: 140px; }
 .dialog-actions { display: flex; gap: 8px; }
 .dialog-actions .spacer { flex: 1; }
+
+/* Usage: the per-agent token line and the run total in the top bar. */
+.top .run-usage { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.presets-label { font-size: 13px; color: var(--muted); margin-right: 2px; }
+.presets button { padding: 5px 12px; font-size: 14px; }
+.mcp-switch { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); margin: 0; }
+.mcp-switch input { margin-top: 3px; }
+.mcp-switch .hint { display: block; }

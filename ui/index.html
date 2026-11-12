@@ -15,6 +15,7 @@
     </label>
     <span class="powered">Powered by Claude</span>
     <span class="state" id="run-state">Nothing running</span>
+    <span class="run-usage" id="run-usage" hidden></span>
     <button type="button" id="open-settings">Settings</button>
   </div>
 
@@ -49,6 +50,9 @@
   <form id="settings-form" method="dialog">
     <h2>Settings</h2>
     <p class="hint">Changes apply to the next agent that starts, including in a run that is in progress.</p>
+    <div class="presets" id="presets">
+      <span class="presets-label">Start from</span>
+    </div>
     <div class="settings-grid" id="settings-roles">
       <span class="grid-head"></span><span class="grid-head">Model</span><span class="grid-head">Effort</span>
     </div>
@@ -57,6 +61,10 @@
       <input type="number" id="budget" min="0.5" max="1000" step="0.5" placeholder="No cap">
       <p class="hint">Counts API-equivalent usage. On a Claude plan login it limits how much of your plan one session can use. Empty means no cap.</p>
     </div>
+    <label class="mcp-switch">
+      <input type="checkbox" id="use-mcp">
+      <span>Give agents my MCP servers <span class="hint">(off saves tokens: every server's tool list is sent on every turn of every agent)</span></span>
+    </label>
     <p class="notice" id="settings-notice" role="alert"></p>
     <div class="dialog-actions">
       <button type="button" id="settings-reset">Reset to defaults</button>

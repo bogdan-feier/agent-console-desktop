@@ -15,7 +15,8 @@ each role's model and effort in Settings.
 ## Layout
 - `crates/core/` is the engine. No Tauri, no UI. Everything here is unit-testable.
   - `config.rs`: default models, permissions, role instructions. Tunables go here as named constants.
-  - `settings.rs`: what the Settings window changes (model and effort per role, budget), and its file.
+  - `settings.rs`: what the Settings window changes (model and effort per role, budget, MCP), presets.
+  - `changes.rs`: the worker's git diff for the reviewer's prompt.
   - `orchestrator.rs`: the plan, build, review flow.
   - `claude/`: the only code that starts or parses the `claude` program.
 - `src-tauri/` is the app shell: commands the page calls, and event forwarding. Keep it thin.
@@ -23,6 +24,8 @@ each role's model and effort in Settings.
 - `docs/ARCHITECTURE.md` explains how the pieces talk to each other.
 
 ## Rules
+- Keep agent sessions lean: anything added to every prompt costs usage on every turn of
+  every agent. Prefer putting information in the one prompt that needs it.
 - New behaviour goes in `crates/core` with a test. `src-tauri` only wires it to the page.
 - Do not call `claude` from anywhere except `crates/core/src/claude/`.
 - An event the page receives is a variant of `EventKind` in `event.rs`; if you add one,

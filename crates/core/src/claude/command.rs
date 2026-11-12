@@ -1,50 +1,84 @@
 //! Builds the command line for one `claude` session.
 //!
-//! These are the same flags the official Agent SDK passes. Run `claude --help`
-//! to see what each one does.
+//! Most of these are the same flags the official Agent SDK passes. Run
+//! `claude --help` to see what each one does.
+
+use std::collections::HashSet;
 
 use crate::config::AgentSpec;
 
-pub fn build_args(spec: &AgentSpec, resume: Option<&str>) -> Vec<String> {
-    let mut args: Vec<String> = [
-        // -p: print mode. Run one prompt without the interactive screen. The
-        // prompt itself is sent on stdin, so it never hits an argument-length limit.
-        "-p",
-        // One JSON object per line as things happen (needs --verbose).
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        // Anything not pre-approved is refused instead of waiting for a person
-        // to click "allow". Nobody is there to click.
-        "--permission-mode",
-        "dontAsk",
-    ]
-    .map(String::from)
-    .to_vec();
+/// Leave skills and slash commands out of the session. The agents here cannot use
+/// skills anyway (the Skill tool is not in their tool list), so this only removes
+/// the skill descriptions that would otherwise be sent on every turn.
+pub const NO_SKILLS: &str = "--disable-slash-commands";
+/// Use only the MCP servers given on the command line, which is none: no MCP
+/// servers start, and none of their tool descriptions are sent.
+pub const NO_MCP_SERVERS: &str = "--strict-mcp-config";
+/// Move the parts of the system prompt that change between sessions (git status,
+/// the date) into the first message. The system prompt then starts the same way in
+/// every session, so one session can reuse what another put in the prompt cache.
+pub const SHARED_SYSTEM_PROMPT: &str = "--exclude-dynamic-system-prompt-sections";
+const EFFORT: &str = "--effort";
 
-    let mut flag = |name: &str, value: String| {
-        args.push(name.to_string());
-        args.push(value);
-    };
-    flag("--model", spec.model.clone());
+/// `known_flags` is what this version of `claude` lists in `--help` (see
+/// `locate.rs`); `None` means it is not known. The usage-saving flags above are only
+/// passed when they are known to work, so an older Claude Code still runs.
+pub fn build_args(
+    spec: &AgentSpec,
+    resume: Option<&str>,
+    known_flags: Option<&HashSet<String>>,
+) -> Vec<String> {
+    let known = |flag: &str| known_flags.is_some_and(|flags| flags.contains(flag));
+    let mut args = Vec::new();
+
+    // -p: print mode. Run one prompt without the interactive screen. The prompt
+    // itself is sent on stdin, so it never hits an argument-length limit.
+    args.push("-p".to_string());
+    // One JSON object per line as things happen (needs --verbose).
+    push(&mut args, "--output-format", "stream-json");
+    args.push("--verbose".to_string());
+    // Anything not pre-approved is refused instead of waiting for a person to
+    // click "allow". Nobody is there to click.
+    push(&mut args, "--permission-mode", "dontAsk");
+
+    push(&mut args, "--model", &spec.model);
     if let Some(effort) = spec.effort {
-        flag("--effort", effort.as_flag().to_string());
+        // The user chose this level, so pass it unless this claude is known not to have it.
+        if known_flags.is_none() || known(EFFORT) {
+            push(&mut args, EFFORT, effort.as_flag());
+        }
     }
-    flag("--tools", spec.tools.join(","));
-    flag("--allowedTools", spec.allowed.join(","));
+    push(&mut args, "--tools", &spec.tools.join(","));
+    push(&mut args, "--allowedTools", &spec.allowed.join(","));
     // Keeps Claude Code's normal system prompt and adds this agent's role on top.
-    flag("--append-system-prompt", spec.instructions.to_string());
+    push(&mut args, "--append-system-prompt", spec.instructions);
+    push(&mut args, "--max-turns", &spec.max_turns.to_string());
     if let Some(budget) = spec.max_budget_usd {
-        flag("--max-budget-usd", budget.to_string());
+        push(&mut args, "--max-budget-usd", &budget.to_string());
     }
     if let Some(schema) = &spec.output_schema {
-        flag("--json-schema", schema.to_string());
+        push(&mut args, "--json-schema", &schema.to_string());
     }
+
+    for saving in [NO_SKILLS, SHARED_SYSTEM_PROMPT] {
+        if known(saving) {
+            args.push(saving.to_string());
+        }
+    }
+    if !spec.use_mcp_servers && known(NO_MCP_SERVERS) {
+        args.push(NO_MCP_SERVERS.to_string());
+    }
+
     if let Some(session) = resume {
         // The "=" form keeps the value attached to the flag even if it starts with a dash.
         args.push(format!("--resume={session}"));
     }
     args
+}
+
+fn push(args: &mut Vec<String>, flag: &str, value: &str) {
+    args.push(flag.to_string());
+    args.push(value.to_string());
 }
 
 #[cfg(test)]
@@ -58,16 +92,37 @@ mod tests {
         &args[position + 1]
     }
 
+    fn has(args: &[String], flag: &str) -> bool {
+        args.iter().any(|arg| arg == flag)
+    }
+
+    fn all_known() -> HashSet<String> {
+        [NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT, EFFORT].map(String::from).into()
+    }
+
     #[test]
     fn planner_is_read_only_opus_with_a_schema() {
-        let args = build_args(&config::planner(&Settings::default()), None);
+        let args = build_args(&config::planner(&Settings::default()), None, None);
         assert_eq!(value_after(&args, "--model"), "opus");
         assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob");
         assert_eq!(value_after(&args, "--permission-mode"), "dontAsk");
+        assert_eq!(value_after(&args, "--max-turns"), config::PLANNER_MAX_TURNS.to_string());
         assert!(value_after(&args, "--json-schema").contains("\"tasks\""));
         assert!(!args.iter().any(|arg| arg.starts_with("--resume")));
-        assert!(!args.contains(&"--effort".to_string()), "no effort set means no flag");
         assert_eq!(value_after(&args, "--max-budget-usd"), "5");
+    }
+
+    #[test]
+    fn worker_can_edit_and_only_run_listed_commands() {
+        let args = build_args(&config::worker(&Settings::default(), 1), Some("abc-123"), None);
+        assert_eq!(value_after(&args, "--model"), "sonnet");
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write,Bash");
+        let allowed = value_after(&args, "--allowedTools");
+        assert!(allowed.contains("Edit") && allowed.contains("Bash(cargo test *)"));
+        // Plain "Bash" would allow any command; it must only appear as specific rules.
+        assert!(!allowed.split(',').any(|rule| rule == "Bash"));
+        assert!(has(&args, "--resume=abc-123"));
+        assert!(!has(&args, "--json-schema"));
     }
 
     #[test]
@@ -75,21 +130,40 @@ mod tests {
         let mut settings = Settings::default();
         settings.worker.effort = Some(Effort::Low);
         settings.max_budget_usd = None;
-        let args = build_args(&config::worker(&settings, 2), None);
+        let args = build_args(&config::worker(&settings, 2), None, None);
         assert_eq!(value_after(&args, "--effort"), "low");
-        assert!(!args.contains(&"--max-budget-usd".to_string()));
+        assert!(!has(&args, "--max-budget-usd"));
+
+        settings.worker.effort = None;
+        assert!(!has(&build_args(&config::worker(&settings, 2), None, None), "--effort"));
     }
 
     #[test]
-    fn worker_can_edit_and_only_run_listed_commands() {
-        let args = build_args(&config::worker(&Settings::default(), 1), Some("abc-123"));
-        assert_eq!(value_after(&args, "--model"), "sonnet");
-        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write,Bash");
-        let allowed = value_after(&args, "--allowedTools");
-        assert!(allowed.contains("Edit") && allowed.contains("Bash(cargo test *)"));
-        // Plain "Bash" would allow any command; it must only appear as specific rules.
-        assert!(!allowed.split(',').any(|rule| rule == "Bash"));
-        assert!(args.contains(&"--resume=abc-123".to_string()));
-        assert!(!args.contains(&"--json-schema".to_string()));
+    fn saving_flags_are_passed_only_when_claude_lists_them() {
+        let spec = config::reviewer(&Settings::default(), 1);
+
+        let unknown = build_args(&spec, None, None);
+        assert!(!has(&unknown, NO_SKILLS) && !has(&unknown, NO_MCP_SERVERS));
+
+        let known = all_known();
+        let args = build_args(&spec, None, Some(&known));
+        assert!(has(&args, NO_SKILLS));
+        assert!(has(&args, NO_MCP_SERVERS));
+        assert!(has(&args, SHARED_SYSTEM_PROMPT));
+
+        let older: HashSet<String> = [NO_SKILLS.to_string()].into();
+        let args = build_args(&spec, None, Some(&older));
+        assert!(has(&args, NO_SKILLS));
+        assert!(!has(&args, SHARED_SYSTEM_PROMPT));
+        // This claude is known not to have --effort, so it is left out rather than failing.
+        assert!(!has(&args, EFFORT));
+    }
+
+    #[test]
+    fn mcp_servers_load_when_the_settings_ask_for_them() {
+        let settings = Settings { use_mcp_servers: true, ..Settings::default() };
+        let args = build_args(&config::worker(&settings, 1), None, Some(&all_known()));
+        assert!(!has(&args, NO_MCP_SERVERS));
+        assert!(has(&args, NO_SKILLS));
     }
 }

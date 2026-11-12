@@ -16,7 +16,7 @@ use agent_console_core::config::{self, AuthMode, Role, Task};
 use agent_console_core::demo::DemoRunner;
 use agent_console_core::orchestrator::{can_chat, supervised};
 use agent_console_core::run::EventSink;
-use agent_console_core::settings::{self, Settings, SharedSettings};
+use agent_console_core::settings::{self, Preset, Settings, SharedSettings};
 use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run, RunState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -93,8 +93,16 @@ struct AppInfo {
     settings: Settings,
     /// The built-in defaults, for the "Reset to defaults" button.
     default_settings: Settings,
+    /// The ready-made combinations offered in the Settings window.
+    presets: Vec<PresetInfo>,
     /// True when the app was started with AGENT_CONSOLE_DEMO=1.
     demo_default: bool,
+}
+
+#[derive(Serialize)]
+struct PresetInfo {
+    preset: Preset,
+    settings: Settings,
 }
 
 /// What the page receives for every event: which run it belongs to, and the event.
@@ -126,6 +134,10 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
         auth: config::AUTH,
         settings: current,
         default_settings: Settings::default(),
+        presets: Preset::ALL
+            .into_iter()
+            .map(|preset| PresetInfo { preset, settings: Settings::preset(preset) })
+            .collect(),
         demo_default: env::var(DEMO_VARIABLE).is_ok_and(|value| value == "1"),
     }
 }

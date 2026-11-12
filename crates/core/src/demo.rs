@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::config::{AgentSpec, Role};
-use crate::event::EventKind;
+use crate::event::{EventKind, TokenUsage};
 use crate::orchestrator::FIX_PROMPT_MARKER;
 use crate::run::Run;
 use crate::runner::{AgentError, AgentOutput, AgentRunner};
@@ -44,6 +44,23 @@ impl AgentRunner for DemoRunner {
         prompt: &str,
         _resume: Option<&str>,
     ) -> Result<AgentOutput, AgentError> {
+        let output = self.scripted(run, spec, prompt).await?;
+        // Made-up but realistic numbers, so the usage line can be seen in demo mode.
+        // No cost: demo mode spends nothing.
+        let tokens = TokenUsage {
+            input_tokens: 1_800,
+            output_tokens: 900,
+            cache_read_input_tokens: 38_000,
+            cache_creation_input_tokens: 6_500,
+        };
+        run.emit(Some(&spec.id), EventKind::Result { cost_usd: None, turns: Some(4), tokens });
+        Ok(output)
+    }
+}
+
+impl DemoRunner {
+    /// The scripted session for each role.
+    async fn scripted(&self, run: &Run, spec: &AgentSpec, prompt: &str) -> Result<AgentOutput, AgentError> {
         let model = format!("demo-{}", spec.model);
         run.emit(Some(&spec.id), EventKind::AgentModel { model });
         // "worker-2" -> 2; the planner has no number.

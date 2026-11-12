@@ -10,8 +10,9 @@ A macOS desktop app that runs a small team of Claude agents on one of your proje
 
 Built with Rust and Tauri 2. The page is plain HTML, CSS and JavaScript shown in the
 system's own web view. Each agent is a separate `claude` session, so the target project's
-`CLAUDE.md`, skills, hooks and `.claude/settings.json` apply to every agent, just as they
-do in the terminal. Powered by Claude.
+`CLAUDE.md`, hooks and `.claude/settings.json` apply to every agent, just as they do in the
+terminal. Skills and MCP servers are left out to save usage (see "Keeping usage down").
+Powered by Claude.
 
 ## First-time setup
 
@@ -69,13 +70,22 @@ mkdir -p .claude && cp docs/claude-settings.example.json .claude/settings.json
 
 ## Settings
 
-The **Settings** button sets, for the planner, the workers and the reviewers:
+**Start from** fills everything in with one of three presets:
+
+| Preset | Planner | Workers | Reviewers | Cap per session |
+|---|---|---|---|---|
+| Lean | Sonnet, medium effort | Sonnet, low | Haiku, default | 3 dollars |
+| Balanced (the default) | Opus, medium | Sonnet, medium | Sonnet, low | 5 dollars |
+| Thorough | Opus, high | Sonnet, high | Opus, medium | 10 dollars |
+
+You can then change any of them. For the planner, the workers and the reviewers you set:
 
 - **Model:** Opus, Sonnet, Haiku, or any model ID you type under "Other".
 - **Effort:** how hard the model thinks before answering (Low to Max). "Default" leaves it to
   Claude Code. Higher effort is slower and uses more of your limits.
 
-It also sets the spending cap per agent session. Changes apply to the next agent that
+It also sets the spending cap per agent session, and whether agents get your MCP servers
+(off by default). Changes apply to the next agent that
 starts, even in the middle of a run. They are saved in
 `~/Library/Application Support/dev.agentconsole.desktop/settings.json`. The starting
 defaults are the constants at the top of `crates/core/src/config.rs`.
@@ -93,12 +103,52 @@ To pay per use with an API key instead, set `AUTH` to `AuthMode::ApiKey` in
 This sign-in is for running the app yourself. A tool you hand to other people has to use
 API keys.
 
+## Keeping usage down
+
+Every agent is a full Claude Code session, and every turn of a session sends the whole
+conversation so far back to the model. Most of what this app does to save usage follows from
+that.
+
+**What the app does for you**
+
+- **Leaner sessions.** Agents start without skill descriptions and without your MCP servers,
+  which would otherwise be sent on every turn of every agent. The agents only need file and
+  shell tools. (These options are only passed if your version of Claude Code lists them in
+  `claude --help`, so an older version still works, just without this saving.)
+- **Shared prompt cache.** The parts of the system prompt that change between sessions are
+  moved out of it, and the second of two parallel agents starts 5 seconds after the first.
+  It can then read the first one's cached prompt, which costs far less than sending it fresh.
+- **One task when one is enough.** The planner is told to split work only when the parts are
+  big and independent. Each extra task means another worker and another reviewer.
+- **Reviewers get the diff.** The reviewer's prompt includes what the worker changed (from
+  git), so it does not spend turns finding and reading files. It runs only the task's tests.
+- **Economical instructions.** Every agent is told to search before reading, read only the
+  parts of files it needs, and not re-read what it has already seen.
+- **Limits.** Each session has a turn limit (`*_MAX_TURNS` in `config.rs`) and the spending
+  cap from Settings. An agent that stops at a limit keeps its session: send it a message and
+  it continues where it stopped.
+- **Explicit effort.** The presets set an effort level for every role instead of leaving it to
+  Claude Code's default, so you know what you are getting.
+
+**What you can do**
+
+- **Watch the numbers.** Each agent's panel shows the tokens its session used, and the top
+  bar shows the run total. "Read from cache" is the cheap kind.
+- **Try the Lean preset** for routine work, and Thorough only when quality matters most.
+- **Keep brainstorms short.** Each message resends the conversation so far (mostly from
+  cache, but it grows). When you know what you want, press Make plan.
+- **Plan right away** for small, clear changes: it skips the brainstorm entirely.
+- **Keep the target project's `CLAUDE.md` short.** Every agent reads it at the start.
+- **Ask for one thing per run.** Two unrelated requests in one run cost more than two
+  small runs, because every agent carries both in its context.
+
 ## Changing things
 
 | To change | Edit |
 |---|---|
-| Default models and cap, allowed shell commands, role instructions | `crates/core/src/config.rs` |
-| What the Settings window can change, and how it is saved | `crates/core/src/settings.rs` |
+| Default models and cap, turn limits, allowed shell commands, role instructions | `crates/core/src/config.rs` |
+| What the Settings window can change, the presets, and how it is saved | `crates/core/src/settings.rs` |
+| What goes into the reviewer's prompt about the changes | `crates/core/src/changes.rs` |
 | The order agents run in | `crates/core/src/orchestrator.rs` |
 | How `claude` is started, or how its output is read | `crates/core/src/claude/` |
 | What the page looks like | `ui/styles.css`, `ui/index.html` |
@@ -138,6 +188,7 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 | What you see | What to do |
 |---|---|
 | An agent fails right after you change its effort | Some models do not support every effort level. Set it back to Default. |
+| "Stopped at this agent's turn limit" | Send the agent a message such as "continue" to let it finish, or raise its limit in `config.rs`. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |
 | "Claude could not sign in" in the planner panel | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
 | A tool line says "Refused or failed" | The command is not on the allow list. Add it to `CHECK_COMMANDS` or to the project's `.claude/settings.json`. |

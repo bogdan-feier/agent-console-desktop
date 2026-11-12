@@ -50,9 +50,25 @@ pub struct RoleSettings {
 }
 
 impl RoleSettings {
-    fn new(model: &str) -> Self {
-        RoleSettings { model: model.to_string(), effort: None }
+    fn new(model: &str, effort: Option<Effort>) -> Self {
+        RoleSettings { model: model.to_string(), effort }
     }
+}
+
+/// Ready-made combinations for the Settings window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// Least usage: Sonnet plans, Haiku reviews, low effort for the workers.
+    Lean,
+    /// The default: Opus plans, Sonnet builds and reviews, moderate effort.
+    Balanced,
+    /// Most careful: high effort, Opus also reviews. Uses the most.
+    Thorough,
+}
+
+impl Preset {
+    pub const ALL: [Preset; 3] = [Preset::Lean, Preset::Balanced, Preset::Thorough];
 }
 
 /// `#[serde(default)]`: a field missing from the file (say, after an update adds
@@ -65,16 +81,43 @@ pub struct Settings {
     pub reviewer: RoleSettings,
     /// Spending cap per agent session in US dollars; `None` means no cap.
     pub max_budget_usd: Option<f64>,
+    /// Give agents the MCP servers configured in Claude Code. Off by default: every
+    /// server adds its tool descriptions to every turn of every agent, and the agents
+    /// here only need file and shell tools.
+    pub use_mcp_servers: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings {
-            planner: RoleSettings::new(PLANNER_MODEL),
-            worker: RoleSettings::new(WORKER_MODEL),
-            reviewer: RoleSettings::new(REVIEWER_MODEL),
-            max_budget_usd: MAX_BUDGET_USD_PER_AGENT,
-        }
+        Settings::preset(Preset::Balanced)
+    }
+}
+
+impl Settings {
+    pub fn preset(preset: Preset) -> Settings {
+        use Effort::{High, Low, Medium};
+        let (planner, worker, reviewer, budget) = match preset {
+            Preset::Lean => (
+                RoleSettings::new("sonnet", Some(Medium)),
+                RoleSettings::new("sonnet", Some(Low)),
+                // Not every Haiku version takes an effort level, so leave it unset.
+                RoleSettings::new("haiku", None),
+                Some(3.0),
+            ),
+            Preset::Balanced => (
+                RoleSettings::new(PLANNER_MODEL, Some(Medium)),
+                RoleSettings::new(WORKER_MODEL, Some(Medium)),
+                RoleSettings::new(REVIEWER_MODEL, Some(Low)),
+                MAX_BUDGET_USD_PER_AGENT,
+            ),
+            Preset::Thorough => (
+                RoleSettings::new("opus", Some(High)),
+                RoleSettings::new("sonnet", Some(High)),
+                RoleSettings::new("opus", Some(Medium)),
+                Some(10.0),
+            ),
+        };
+        Settings { planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
     }
 }
 
@@ -167,12 +210,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_the_constants_in_config() {
+    fn defaults_are_the_balanced_preset() {
         let settings = Settings::default();
+        assert_eq!(settings, Settings::preset(Preset::Balanced));
         assert_eq!(settings.planner.model, "opus");
         assert_eq!(settings.worker.model, "sonnet");
-        assert_eq!(settings.reviewer.model, "sonnet");
-        assert_eq!(settings.planner.effort, None);
+        assert_eq!(settings.reviewer.effort, Some(Effort::Low));
+        assert!(!settings.use_mcp_servers);
+    }
+
+    #[test]
+    fn every_preset_is_valid() {
+        for preset in Preset::ALL {
+            assert!(Settings::preset(preset).validated().is_ok(), "{preset:?}");
+        }
     }
 
     #[test]
@@ -244,5 +295,6 @@ mod tests {
         assert!(message.is_none());
         assert_eq!(settings.planner.model, "sonnet");
         assert_eq!(settings.worker, Settings::default().worker);
+        assert!(!settings.use_mcp_servers);
     }
 }

@@ -55,6 +55,22 @@ schema, so the plan reflects the conversation.
 `orchestrator::can_chat` decides who may be messaged: the planner always, the others only
 once they have finished a turn, and nobody while something is running.
 
+## Usage savings
+
+- `claude/command.rs` adds `--disable-slash-commands`, `--strict-mcp-config` and
+  `--exclude-dynamic-system-prompt-sections` when the installed `claude` lists them.
+  `claude/locate.rs` reads `claude --help` once, when it finds the program, to know which
+  options exist.
+- `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds
+  apart (`PARALLEL_START_GAP` in `config.rs`), so the later ones can reuse the prompt cache.
+  The demo runner leaves it at zero.
+- `changes.rs` collects the worker's diff with git, and `reviewer_prompt` puts it in the
+  reviewer's prompt.
+- Every session has `--max-turns` (from `config.rs`) and `--max-budget-usd` (from Settings).
+  When one stops at a limit, `ClaudeRunner` still keeps its session, so a message continues it.
+- The `result` event carries the session's token counts (`TokenUsage` in `event.rs`), which
+  the page shows per agent and in total.
+
 ## Settings
 
 `settings.rs` holds the model and effort for each role, and the spending cap. The app loads
@@ -98,7 +114,8 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
 | `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: brainstorm, plan, build, review, follow-ups, fix, stop, live settings changes |
-| `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing |
+| `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |
+| `#[cfg(test)]` in `crates/core/src/changes.rs` | Diffs from real temporary git repositories |
 
 Nothing in the tests calls the real `claude`.
 

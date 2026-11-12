@@ -3,7 +3,7 @@
 //! Every event serialises to a flat JSON object such as
 //! `{"seq": 4, "agent": "worker-1", "type": "tool", "name": "Read", "detail": "src/a.py"}`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Review, Task};
 use crate::run::RunState;
@@ -53,16 +53,30 @@ pub enum EventKind {
     Error {
         message: String,
     },
-    /// The agent finished; how much it used.
+    /// The agent finished (or hit a limit); how much it used.
     Result {
         cost_usd: Option<f64>,
         turns: Option<u64>,
+        tokens: TokenUsage,
     },
     Plan {
         summary: String,
         tasks: Vec<Task>,
     },
     Review(Review),
+}
+
+/// Tokens one session used, with the same field names the `claude` CLI reports.
+///
+/// Cache reads are the cheap kind: the part of the prompt that was the same as the
+/// turn before. Cache creation is the prompt being stored for later turns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

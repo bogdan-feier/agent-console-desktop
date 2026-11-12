@@ -7,12 +7,14 @@
 
 mod common;
 
+use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use agent_console_core::claude::command::{NO_MCP_SERVERS, NO_SKILLS, SHARED_SYSTEM_PROMPT};
 use agent_console_core::claude::locate::ClaudeLocation;
 use agent_console_core::claude::ClaudeRunner;
 use agent_console_core::config::{self, AuthMode};
@@ -35,7 +37,11 @@ fn fake_claude() -> ClaudeLocation {
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         (dir, program)
     });
-    ClaudeLocation { program: program.clone(), path_variable: std::env::var("PATH").unwrap_or_default() }
+    ClaudeLocation {
+        program: program.clone(),
+        path_variable: std::env::var("PATH").unwrap_or_default(),
+        known_flags: None,
+    }
 }
 
 /// A fresh project folder set up for one scenario of the fake program.
@@ -89,8 +95,11 @@ async fn a_successful_session_becomes_events_and_an_answer() {
     assert_eq!(tools, ["Read", "Bash"]);
     assert_eq!(collected.of_type("tool")[0]["detail"], "src/a.py");
     assert!(collected.of_type("tool_error")[0]["detail"].as_str().unwrap().contains("denied"));
-    assert_eq!(collected.of_type("result")[0]["cost_usd"], 0.42);
-    assert_eq!(collected.of_type("result")[0]["turns"], 3);
+    let result = &collected.of_type("result")[0];
+    assert_eq!(result["cost_usd"], 0.42);
+    assert_eq!(result["turns"], 3);
+    assert_eq!(result["tokens"]["cache_read_input_tokens"], 45000);
+    assert_eq!(result["tokens"]["output_tokens"], 800);
 }
 
 #[tokio::test]
@@ -151,7 +160,7 @@ async fn hitting_the_budget_cap_is_reported_by_its_name() {
 
     let error =
         run_agent(&runner, &run, &config::worker(&Settings::default(), 1), "x", None).await.unwrap_err();
-    assert_eq!(error.to_string(), "error_max_budget_usd");
+    assert!(error.to_string().contains("spending cap"), "{error}");
 }
 
 #[tokio::test]
@@ -172,6 +181,7 @@ async fn a_missing_program_is_a_clear_error() {
     let nowhere = ClaudeLocation {
         program: PathBuf::from("/definitely/not/here/claude"),
         path_variable: String::new(),
+        known_flags: None,
     };
     let runner = ClaudeRunner::new(nowhere, AuthMode::ClaudeLogin);
 
@@ -291,4 +301,35 @@ async fn a_failed_chat_reply_does_not_fail_the_run() {
 
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(collected.statuses("planner"), ["running", "error"]);
+}
+#[tokio::test]
+async fn usage_saving_flags_reach_a_claude_that_knows_them() {
+    let project = project("ok");
+    let run = new_run(project.path(), &Collected::default());
+    let mut location = fake_claude();
+    location.known_flags = Some([NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT].map(String::from).into());
+    let runner = ClaudeRunner::new(location, AuthMode::ClaudeLogin);
+
+    run_agent(&runner, &run, &config::reviewer(&Settings::default(), 1), "x", None).await.unwrap();
+
+    let args: HashSet<String> = lines(&project, "fake-args.txt").into_iter().collect();
+    for expected in [NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT, "--max-turns"] {
+        assert!(args.contains(expected), "missing {expected}");
+    }
+}
+
+#[tokio::test]
+async fn an_agent_stopped_at_its_turn_limit_can_be_continued() {
+    let project = project("maxturns");
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+    let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
+
+    let error =
+        run_agent(&runner, &run, &config::worker(&Settings::default(), 1), "x", None).await.unwrap_err();
+
+    assert!(error.to_string().contains("turn limit"), "{error}");
+    // What it used is still reported, and its session is kept for a follow-up message.
+    assert_eq!(collected.of_type("result")[0]["tokens"]["output_tokens"], 4000);
+    assert_eq!(run.session("worker-1").as_deref(), Some("sess-7"));
 }

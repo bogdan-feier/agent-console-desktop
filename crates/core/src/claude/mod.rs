@@ -9,13 +9,14 @@ pub mod locate;
 pub mod protocol;
 
 use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::config::{AgentSpec, AuthMode};
+use crate::config::{self, AgentSpec, AuthMode};
 use crate::event::EventKind;
 use crate::run::Run;
 use crate::runner::{AgentError, AgentOutput, AgentRunner};
@@ -55,6 +56,10 @@ impl ClaudeRunner {
 
 #[async_trait]
 impl AgentRunner for ClaudeRunner {
+    fn parallel_start_gap(&self) -> Duration {
+        config::PARALLEL_START_GAP
+    }
+
     async fn run_session(
         &self,
         run: &Run,
@@ -66,7 +71,7 @@ impl AgentRunner for ClaudeRunner {
 
         let mut command = Command::new(&self.location.program);
         command
-            .args(command::build_args(spec, resume))
+            .args(command::build_args(spec, resume, self.location.known_flags.as_ref()))
             .current_dir(&run.project_dir)
             .env("PATH", &self.location.path_variable)
             .stdin(Stdio::piped())
@@ -154,22 +159,44 @@ impl AgentRunner for ClaudeRunner {
                 format!("claude stopped early: {}", shorten(reason))
             }));
         };
+        // Report what the session used, whether it succeeded or stopped at a limit.
+        let usage = EventKind::Result {
+            cost_usd: result.total_cost_usd,
+            turns: result.num_turns,
+            tokens: result.usage,
+        };
+        run.emit(Some(agent), usage);
+
         if result.is_error {
-            let message = if auth_failed {
-                self.auth_hint().to_string()
-            } else {
-                result.result.unwrap_or(result.subtype)
-            };
-            return Err(AgentError(message));
+            if auth_failed {
+                return Err(AgentError(self.auth_hint().to_string()));
+            }
+            // The session itself is fine (it stopped at a limit, say), so keep it: a
+            // message to this agent continues where it stopped instead of starting over.
+            if let Some(session) = &result.session_id {
+                run.record_session(agent, session.clone());
+            }
+            return Err(AgentError(describe_failure(&result)));
         }
 
-        let usage = EventKind::Result { cost_usd: result.total_cost_usd, turns: result.num_turns };
-        run.emit(Some(agent), usage);
         Ok(AgentOutput {
             text: result.result.unwrap_or_default(),
             structured: result.structured_output,
             session_id: result.session_id,
         })
+    }
+}
+
+/// A readable explanation of why a session ended with an error.
+fn describe_failure(result: &ResultLine) -> String {
+    match result.subtype.as_str() {
+        "error_max_turns" => "Stopped at this agent's turn limit (the *_MAX_TURNS constants in \
+                              config.rs). Send it a message to let it continue."
+            .to_string(),
+        "error_max_budget_usd" => "Stopped at the spending cap from Settings. Send it a message to \
+                                   let it continue, or raise the cap."
+            .to_string(),
+        _ => result.result.clone().unwrap_or_else(|| result.subtype.clone()),
     }
 }
 

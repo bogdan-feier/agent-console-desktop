@@ -17,6 +17,7 @@ use std::sync::Arc;
 use futures::future::join_all;
 use serde::de::DeserializeOwned;
 
+use crate::changes::{self, Changes};
 use crate::config::{self, Plan, Review, Role, Task, WORKER_COUNT};
 use crate::event::EventKind;
 use crate::run::{Run, RunState};
@@ -84,11 +85,22 @@ impl Orchestrator {
 
         run.set_state(RunState::Building);
         // `join_all` polls all these futures at the same time and waits for every one.
-        let finished = join_all(numbers.iter().map(|&number| self.build_one(run, number, false))).await;
+        // Each one first waits its turn (see `start_after`), so the agents start a few
+        // seconds apart and the later ones can reuse the earlier one's prompt cache.
+        let finished = join_all(numbers.iter().map(|&number| async move {
+            self.start_after(number).await;
+            self.build_one(run, number, false).await
+        }))
+        .await;
 
         run.set_state(RunState::Reviewing);
-        let to_review = numbers.iter().zip(finished).filter(|(_, ok)| *ok).map(|(&number, _)| number);
-        join_all(to_review.map(|number| self.review_one(run, number))).await;
+        let to_review: Vec<usize> =
+            numbers.iter().zip(finished).filter(|(_, ok)| *ok).map(|(&number, _)| number).collect();
+        join_all(to_review.iter().enumerate().map(|(position, &number)| async move {
+            self.start_after(position + 1).await;
+            self.review_one(run, number).await
+        }))
+        .await;
 
         run.set_state(RunState::Done);
         Ok(())
@@ -133,6 +145,12 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Wait before starting the `position`-th of several parallel agents (counting from 1).
+    async fn start_after(&self, position: usize) {
+        let earlier = u32::try_from(position.saturating_sub(1)).unwrap_or(u32::MAX);
+        tokio::time::sleep(self.runner.parallel_start_gap().saturating_mul(earlier)).await;
+    }
+
     /// Run worker `number` on its task. Returns false if the worker failed.
     async fn build_one(&self, run: &Run, number: usize, is_fix: bool) -> bool {
         let spec = config::worker(&self.settings(), number);
@@ -154,7 +172,8 @@ impl Orchestrator {
     async fn review_one(&self, run: &Run, number: usize) {
         let spec = config::reviewer(&self.settings(), number);
         let Some(task) = run.task(number) else { return };
-        let prompt = reviewer_prompt(&task, &run.worker_report(number).unwrap_or_default());
+        let changes = changes::changes_to(&run.project_dir, &task.files).await;
+        let prompt = reviewer_prompt(&task, &run.worker_report(number).unwrap_or_default(), &changes);
         let Ok(output) = run_agent(self.runner.as_ref(), run, &spec, &prompt, None).await else {
             return;
         };
@@ -254,9 +273,22 @@ fn worker_prompt(task: &Task) -> String {
     format!("Your task: {}\n\n{}\n\nFiles you may create or edit:\n{}", task.title, task.instructions, files)
 }
 
-fn reviewer_prompt(task: &Task, report: &str) -> String {
+fn reviewer_prompt(task: &Task, report: &str, changes: &Changes) -> String {
     let report = if report.is_empty() { "(no report)" } else { report };
-    format!("Review this finished task.\n\n{}\n\nThe worker's own report:\n{}", worker_prompt(task), report)
+    let changes = match changes {
+        Changes::Diff(diff) => {
+            format!("The changes to the task's files since the last commit (new files in full):\n\n{diff}")
+        }
+        Changes::Nothing => "Git shows no changes to the task's files.".to_string(),
+        Changes::TooLong => "The changes are too long to include; read the task's files.".to_string(),
+        Changes::Unknown => "The changes are not included; read the task's files.".to_string(),
+    };
+    format!(
+        "Review this finished task.\n\n{}\n\nThe worker's own report:\n{}\n\n{}",
+        worker_prompt(task),
+        report,
+        changes
+    )
 }
 
 fn fix_prompt(review: &Review) -> String {

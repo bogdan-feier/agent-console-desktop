@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::event::TokenUsage;
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Line {
@@ -77,6 +79,8 @@ pub struct ResultLine {
     pub session_id: Option<String>,
     pub total_cost_usd: Option<f64>,
     pub num_turns: Option<u64>,
+    #[serde(default)]
+    pub usage: TokenUsage,
 }
 
 /// Parse one line of output. Returns `None` for blank or non-JSON lines.
@@ -163,6 +167,22 @@ mod tests {
         assert_eq!(result.num_turns, Some(1));
         assert_eq!(result.session_id.as_deref(), Some("d80f"));
         assert!(result.structured_output.is_none());
+        assert_eq!(result.usage.input_tokens, 0);
+    }
+
+    #[test]
+    fn result_line_gives_token_usage() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"cache_read_input_tokens":45000,"cache_creation_input_tokens":3000,"output_tokens":800,"service_tier":"standard"}}"#;
+        let Some(Line::Result(result)) = parse_line(line) else { panic!("not result") };
+        assert_eq!(
+            result.usage,
+            TokenUsage {
+                input_tokens: 1200,
+                output_tokens: 800,
+                cache_read_input_tokens: 45000,
+                cache_creation_input_tokens: 3000
+            }
+        );
     }
 
     #[test]

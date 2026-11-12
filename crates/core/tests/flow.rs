@@ -214,3 +214,48 @@ async fn changed_settings_apply_to_the_next_agent() {
     assert!(models.contains(&("worker-1".to_string(), "demo-haiku".to_string())));
     assert!(models.contains(&("reviewer-1".to_string(), "demo-sonnet".to_string())));
 }
+
+/// Wraps the demo runner to record when each agent starts, with a start gap.
+struct GappedRunner {
+    inner: DemoRunner,
+    gap: Duration,
+    starts: std::sync::Mutex<Vec<(String, std::time::Instant)>>,
+}
+
+#[async_trait::async_trait]
+impl agent_console_core::AgentRunner for GappedRunner {
+    fn parallel_start_gap(&self) -> Duration {
+        self.gap
+    }
+
+    async fn run_session(
+        &self,
+        run: &agent_console_core::Run,
+        spec: &agent_console_core::config::AgentSpec,
+        prompt: &str,
+        resume: Option<&str>,
+    ) -> Result<agent_console_core::AgentOutput, agent_console_core::AgentError> {
+        self.starts.lock().unwrap().push((spec.id.clone(), std::time::Instant::now()));
+        self.inner.run_session(run, spec, prompt, resume).await
+    }
+}
+
+#[tokio::test]
+async fn parallel_agents_start_one_gap_apart() {
+    let gap = Duration::from_millis(300);
+    let runner =
+        Arc::new(GappedRunner { inner: DemoRunner::new(Duration::ZERO), gap, starts: Default::default() });
+    let orchestrator = Orchestrator::new(runner.clone(), settings::shared(Settings::default()));
+    let run = new_run(".", &Collected::default());
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
+
+    let starts = runner.starts.lock().unwrap().clone();
+    let at = |agent: &str| starts.iter().find(|(id, _)| id == agent).map(|(_, at)| *at).unwrap();
+    // Both waits are measured from the same moment, and the first agent itself starts a
+    // millisecond or so after that, so allow a little slack.
+    let at_least = gap - Duration::from_millis(20);
+    assert!(at("worker-2") - at("worker-1") >= at_least);
+    assert!(at("reviewer-2") - at("reviewer-1") >= at_least);
+}

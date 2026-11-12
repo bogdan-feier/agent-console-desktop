@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use agent_console_core::claude::{locate, ClaudeRunner};
-use agent_console_core::config;
 use agent_console_core::orchestrator::supervised;
 use agent_console_core::run::EventSink;
-use agent_console_core::{Event, Orchestrator, Run};
+use agent_console_core::settings::{self, Settings};
+use agent_console_core::{config, Event, Orchestrator, Run};
 
 #[tokio::main]
 async fn main() {
@@ -34,6 +34,7 @@ async fn main() {
     let print: EventSink =
         Arc::new(|_run_id: &str, event: &Event| println!("{}", serde_json::to_string(event).unwrap()));
     let run = Run::new(project_dir, request, print);
-    let orchestrator = Orchestrator::new(Arc::new(ClaudeRunner::new(location, config::AUTH)));
-    supervised(run.clone(), orchestrator.plan(&run)).await;
+    let runner = Arc::new(ClaudeRunner::new(location, config::AUTH));
+    let orchestrator = Orchestrator::new(runner, settings::shared(Settings::default()));
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
 }

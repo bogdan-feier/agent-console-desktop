@@ -51,7 +51,13 @@ pub async fn run_agent(
     let mut status = StatusGuard::start(run, &spec.id);
     let result = runner.run_session(run, spec, prompt, resume).await;
     match &result {
-        Ok(_) => status.finish(AgentStatus::Done),
+        Ok(output) => {
+            // Remember the session so the agent can be resumed later.
+            if let Some(session) = &output.session_id {
+                run.record_session(&spec.id, session.clone());
+            }
+            status.finish(AgentStatus::Done)
+        }
         Err(error) => {
             run.emit(Some(&spec.id), EventKind::Error { message: error.to_string() });
             status.finish(AgentStatus::Error);

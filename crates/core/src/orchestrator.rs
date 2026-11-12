@@ -1,12 +1,15 @@
 //! Decides which agent runs when.
 //!
-//! The flow is fixed and written out top to bottom:
+//! The main flow is fixed and written out top to bottom:
 //!
 //! ```text
-//! planner -> (you approve the plan) -> workers in parallel -> reviewers in parallel
+//! (talk with the planner) -> planner makes a plan -> (you approve it)
+//!     -> workers in parallel -> reviewers in parallel
 //! ```
 //!
-//! Each agent is its own session, so an agent only knows what we put in its prompt.
+//! Whenever nothing is running, the user can also send a message to any agent
+//! that has worked before ([`Orchestrator::chat`]). That resumes the agent's own
+//! session, so it remembers everything it did and said.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -14,31 +17,53 @@ use std::sync::Arc;
 use futures::future::join_all;
 use serde::de::DeserializeOwned;
 
-use crate::config::{self, Plan, Review, Task, WORKER_COUNT};
+use crate::config::{self, Plan, Review, Role, Task, WORKER_COUNT};
 use crate::event::EventKind;
 use crate::run::{Run, RunState};
 use crate::runner::{run_agent, AgentError, AgentOutput, AgentRunner};
+use crate::settings::{self, Settings, SharedSettings};
 
 /// Start of the prompt a worker gets when a reviewer sends its work back.
 pub const FIX_PROMPT_MARKER: &str = "The reviewer asked for changes to your task.";
+/// Longest message the user may send to an agent, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 20_000;
 
-/// Cheap to clone: it only holds a shared pointer to the runner.
+/// Cheap to clone: it only holds shared pointers.
 #[derive(Clone)]
 pub struct Orchestrator {
     runner: Arc<dyn AgentRunner>,
+    settings: SharedSettings,
 }
 
 impl Orchestrator {
-    pub fn new(runner: Arc<dyn AgentRunner>) -> Self {
-        Orchestrator { runner }
+    pub fn new(runner: Arc<dyn AgentRunner>, settings: SharedSettings) -> Self {
+        Orchestrator { runner, settings }
     }
 
-    /// Phase 1: the planner explores the project and proposes tasks.
-    pub async fn plan(&self, run: &Run) -> Result<(), AgentError> {
+    /// The settings as they are right now. Read once per agent, so a change in the
+    /// Settings window applies to the next agent that starts.
+    fn settings(&self) -> Settings {
+        settings::current(&self.settings)
+    }
+
+    /// The planner turns the request, or the conversation so far, into tasks.
+    ///
+    /// `guidance` is optional extra direction typed by the user ("keep it to one file").
+    pub async fn plan(&self, run: &Run, guidance: Option<&str>) -> Result<(), AgentError> {
         run.set_state(RunState::Planning);
-        let spec = config::planner();
-        let prompt = format!("Plan this request:\n\n{}", run.request);
-        let output = run_agent(self.runner.as_ref(), run, &spec, &prompt, None).await?;
+        let spec = config::planner(&self.settings());
+        // If the user has already talked with the planner, continue that session so
+        // the plan reflects the conversation. Otherwise start from the request.
+        let session = run.session(&spec.id);
+        let mut prompt = match session {
+            Some(_) => "Turn what we discussed into the plan now.".to_string(),
+            None => format!("Plan this request:\n\n{}", run.request),
+        };
+        if let Some(guidance) = guidance.map(str::trim).filter(|text| !text.is_empty()) {
+            run.emit(Some(&spec.id), EventKind::UserMessage { text: guidance.to_string() });
+            prompt.push_str(&format!("\n\nAdditional direction from the user:\n{guidance}"));
+        }
+        let output = run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await?;
 
         let mut plan: Plan = structured_answer(run, &spec.id, &output)?;
         plan.tasks.truncate(WORKER_COUNT);
@@ -51,7 +76,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Phases 2 and 3: workers in parallel, then a reviewer for each worker that finished.
+    /// Workers in parallel, then a reviewer for each worker that finished.
     pub async fn build_and_review(&self, run: &Run, mut tasks: Vec<Task>) -> Result<(), AgentError> {
         tasks.truncate(WORKER_COUNT);
         let numbers: Vec<usize> = (1..=tasks.len()).collect();
@@ -80,17 +105,45 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Send the user's message to one agent and let it reply.
+    ///
+    /// Check [`can_chat`] first. A failed reply is shown in the agent's panel and
+    /// the run goes back to the state it was in, so one bad answer does not end
+    /// the run.
+    pub async fn chat(&self, run: &Run, agent_id: &str, message: &str) -> Result<(), AgentError> {
+        let Some(spec) = config::chat_spec(&self.settings(), agent_id) else {
+            return Err(AgentError(format!("There is no agent called {agent_id}.")));
+        };
+        let previous = run.state();
+        run.set_state(RunState::Chatting);
+        run.emit(Some(agent_id), EventKind::UserMessage { text: message.to_string() });
+
+        let session = run.session(agent_id);
+        // The very first message of a brainstorm doubles as the run's request.
+        let prompt = match (&session, spec.role) {
+            (None, Role::Planner) => format!("{message}\n\n(The user may later ask you to plan this.)"),
+            _ => message.to_string(),
+        };
+        let result = run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await;
+        if let (Ok(output), Some(number)) = (&result, worker_number(agent_id)) {
+            // What a worker says in a chat is its latest report for the reviewer.
+            run.record_worker(number, output.text.clone());
+        }
+        run.set_state(previous);
+        Ok(())
+    }
+
     /// Run worker `number` on its task. Returns false if the worker failed.
     async fn build_one(&self, run: &Run, number: usize, is_fix: bool) -> bool {
-        let spec = config::worker(number);
+        let spec = config::worker(&self.settings(), number);
         let Some(task) = run.task(number) else { return false };
         let (prompt, session) = match run.review(number) {
-            Some(review) if is_fix => (fix_prompt(&review), run.worker_session(number)),
+            Some(review) if is_fix => (fix_prompt(&review), run.session(&spec.id)),
             _ => (worker_prompt(&task), None),
         };
         match run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await {
             Ok(output) => {
-                run.record_worker(number, output.text, output.session_id);
+                run.record_worker(number, output.text);
                 true
             }
             Err(_) => false, // run_agent already showed the error in the worker's panel
@@ -99,7 +152,7 @@ impl Orchestrator {
 
     /// Run reviewer `number` on what worker `number` did.
     async fn review_one(&self, run: &Run, number: usize) {
-        let spec = config::reviewer(number);
+        let spec = config::reviewer(&self.settings(), number);
         let Some(task) = run.task(number) else { return };
         let prompt = reviewer_prompt(&task, &run.worker_report(number).unwrap_or_default());
         let Ok(output) = run_agent(self.runner.as_ref(), run, &spec, &prompt, None).await else {
@@ -110,6 +163,33 @@ impl Orchestrator {
             run.emit(Some(&spec.id), EventKind::Review(review));
         }
     }
+}
+
+/// Whether the user may send `message` to `agent_id` right now. The error says why not.
+pub fn can_chat(run: &Run, agent_id: &str, message: &str) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("Type a message first.".to_string());
+    }
+    if message.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(format!("That message is too long (the limit is {MAX_MESSAGE_CHARS} characters)."));
+    }
+    if !run.is_at_rest() {
+        return Err("Wait until the agents have finished.".to_string());
+    }
+    if config::chat_spec(&Settings::default(), agent_id).is_none() {
+        return Err(format!("There is no agent called {agent_id}."));
+    }
+    // The planner can always be talked to. The others only once they have worked,
+    // because a message continues their earlier session.
+    if agent_id != "planner" && run.session(agent_id).is_none() {
+        return Err("This agent has not worked on anything yet.".to_string());
+    }
+    Ok(())
+}
+
+/// "worker-2" -> Some(2); anything else -> None.
+fn worker_number(agent_id: &str) -> Option<usize> {
+    agent_id.strip_prefix("worker-")?.parse().ok()
 }
 
 /// Run one phase and make sure the run always ends in a clear state.

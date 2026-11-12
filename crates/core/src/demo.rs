@@ -50,6 +50,10 @@ impl AgentRunner for DemoRunner {
         let number: usize = spec.id.rsplit('-').next().and_then(|n| n.parse().ok()).unwrap_or(0);
         let session_id = Some(format!("demo-{}", spec.id));
 
+        if spec.chat {
+            return self.chat_reply(run, spec, prompt, session_id).await;
+        }
+
         match spec.role {
             Role::Planner => {
                 self.text(run, spec, "Looking at how the project is laid out.").await;
@@ -99,6 +103,48 @@ impl AgentRunner for DemoRunner {
                 Ok(AgentOutput { text: String::new(), structured: Some(review), session_id })
             }
         }
+    }
+}
+
+impl DemoRunner {
+    /// A scripted answer to a message from the user.
+    async fn chat_reply(
+        &self,
+        run: &Run,
+        spec: &AgentSpec,
+        prompt: &str,
+        session_id: Option<String>,
+    ) -> Result<AgentOutput, AgentError> {
+        // The first line of the user's message, shortened, so the reply visibly answers it.
+        let topic: String = prompt.lines().next().unwrap_or_default().chars().take(80).collect();
+        let reply = match spec.role {
+            Role::Planner => {
+                self.tool(run, spec, "Grep", "def ").await;
+                self.tool(run, spec, "Read", "src/textstats/stats.py").await;
+                format!(
+                    "On \"{topic}\": the project already has a word splitter in `stats.py`, so both \
+                     helpers can reuse it. I see two ways to split the work:\n\
+                     1. One helper per worker, each in its own module with its own tests.\n\
+                     2. One worker writes both, the other only adds tests.\n\
+                     Option 1 keeps the workers out of each other's files. Which do you prefer?"
+                )
+            }
+            Role::Worker => {
+                self.tool(run, spec, "Read", "src/textstats/words.py").await;
+                self.tool(run, spec, "Edit", "src/textstats/words.py").await;
+                self.tool(run, spec, "Bash", "uv run pytest tests/test_words.py").await;
+                format!("Done: \"{topic}\". I changed `words.py` and the tests still pass (3 passed).")
+            }
+            Role::Reviewer => {
+                self.tool(run, spec, "Read", "src/textstats/sentences.py").await;
+                format!(
+                    "About \"{topic}\": the empty-input case is the only real problem. The constant is \
+                     a style point; I would not block on it."
+                )
+            }
+        };
+        self.text(run, spec, &reply).await;
+        Ok(AgentOutput { text: reply, structured: None, session_id })
     }
 }
 

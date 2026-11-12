@@ -33,6 +33,10 @@ pub enum EventKind {
     AgentModel {
         model: String,
     },
+    /// A message the user sent to this agent.
+    UserMessage {
+        text: String,
+    },
     /// Something the agent wrote.
     Text {
         text: String,

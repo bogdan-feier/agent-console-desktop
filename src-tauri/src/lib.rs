@@ -14,17 +14,19 @@ use std::time::Duration;
 use agent_console_core::claude::{locate, ClaudeRunner};
 use agent_console_core::config::{self, AuthMode, Role, Task};
 use agent_console_core::demo::DemoRunner;
-use agent_console_core::orchestrator::supervised;
+use agent_console_core::orchestrator::{can_chat, supervised};
 use agent_console_core::run::EventSink;
-use agent_console_core::{AgentRunner, Event, Orchestrator, Run, RunState};
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use agent_console_core::settings::{self, Settings, SharedSettings};
+use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run, RunState};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{oneshot, OnceCell};
 
 const RUN_EVENT: &str = "run-event";
 const DEMO_VARIABLE: &str = "AGENT_CONSOLE_DEMO";
 const DEMO_STEP_DELAY: Duration = Duration::from_millis(700);
+const SETTINGS_FILE: &str = "settings.json";
 
 /// Commands return `Err(String)` for anything the user should read.
 type CommandResult<T> = Result<T, String>;
@@ -36,14 +38,26 @@ struct ActiveRun {
 }
 
 /// Shared by every command. Tauri hands it out as `State<AppState>`.
-#[derive(Default)]
 struct AppState {
     runs: Mutex<HashMap<String, ActiveRun>>,
     /// Finding `claude` starts a shell, so it is done once, on first use.
     claude: OnceCell<Result<Arc<ClaudeRunner>, String>>,
+    /// The current settings, shared with every orchestrator.
+    settings: SharedSettings,
+    /// Where the settings are saved: the app's folder in ~/Library/Application Support.
+    settings_path: PathBuf,
 }
 
 impl AppState {
+    fn new(settings: Settings, settings_path: PathBuf) -> Self {
+        AppState {
+            runs: Mutex::new(HashMap::new()),
+            claude: OnceCell::new(),
+            settings: settings::shared(settings),
+            settings_path,
+        }
+    }
+
     fn find(&self, run_id: &str) -> CommandResult<(Arc<Run>, Orchestrator)> {
         let runs = self.runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let active = runs.get(run_id).ok_or("That run no longer exists. Start a new one.")?;
@@ -70,13 +84,15 @@ struct AgentInfo {
     id: String,
     role: Role,
     label: String,
-    model: &'static str,
 }
 
 #[derive(Serialize)]
 struct AppInfo {
     agents: Vec<AgentInfo>,
     auth: AuthMode,
+    settings: Settings,
+    /// The built-in defaults, for the "Reset to defaults" button.
+    default_settings: Settings,
     /// True when the app was started with AGENT_CONSOLE_DEMO=1.
     demo_default: bool,
 }
@@ -88,17 +104,39 @@ struct RunEvent<'a> {
     event: &'a Event,
 }
 
+/// How a run begins.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StartMode {
+    /// Send the first message to the planner and talk it through.
+    Brainstorm,
+    /// Ask the planner for a plan straight away.
+    Plan,
+}
+
 #[tauri::command]
-fn app_info() -> AppInfo {
-    let agents = config::all_agents()
+fn app_info(state: State<'_, AppState>) -> AppInfo {
+    let current = settings::current(&state.settings);
+    let agents = config::all_agents(&current)
         .into_iter()
-        .map(|spec| AgentInfo { id: spec.id, role: spec.role, label: spec.label, model: spec.model })
+        .map(|spec| AgentInfo { id: spec.id, role: spec.role, label: spec.label })
         .collect();
     AppInfo {
         agents,
         auth: config::AUTH,
+        settings: current,
+        default_settings: Settings::default(),
         demo_default: env::var(DEMO_VARIABLE).is_ok_and(|value| value == "1"),
     }
+}
+
+/// Check, save and apply new settings. Returns them tidied (model names trimmed).
+#[tauri::command]
+fn save_settings(state: State<'_, AppState>, settings: Settings) -> CommandResult<Settings> {
+    let settings = settings.validated()?;
+    settings::save(&state.settings_path, &settings)?;
+    *state.settings.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
+    Ok(settings)
 }
 
 /// Show the native "choose a folder" dialog.
@@ -117,12 +155,13 @@ async fn start_run(
     app: AppHandle,
     state: State<'_, AppState>,
     project_dir: String,
-    request: String,
+    message: String,
+    mode: StartMode,
     demo: bool,
 ) -> CommandResult<String> {
-    let request = request.trim();
-    if request.is_empty() {
-        return Err("Describe what you want built.".to_string());
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Describe what you want to build or discuss.".to_string());
     }
     let project_dir = expand_home(project_dir.trim());
     if !demo && !project_dir.is_dir() {
@@ -131,13 +170,13 @@ async fn start_run(
 
     let runner: Arc<dyn AgentRunner> =
         if demo { Arc::new(DemoRunner::new(DEMO_STEP_DELAY)) } else { state.claude_runner().await? };
-    let orchestrator = Orchestrator::new(runner);
+    let orchestrator = Orchestrator::new(runner, state.settings.clone());
 
     // Every event of this run is forwarded to the window.
     let sink: EventSink = Arc::new(move |run_id: &str, event: &Event| {
         let _ = app.emit(RUN_EVENT, RunEvent { run_id, event });
     });
-    let run = Run::new(project_dir, request, sink);
+    let run = Run::new(project_dir, message, sink);
 
     let mut runs = state.runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // One run at a time: stop whatever was still going.
@@ -148,7 +187,13 @@ async fn start_run(
     drop(runs);
 
     let run_id = run.id.clone();
-    spawn_phase(run.clone(), async move { orchestrator.plan(&run).await });
+    let first_message = message.to_string();
+    match mode {
+        StartMode::Brainstorm => {
+            spawn_phase(run.clone(), async move { orchestrator.chat(&run, "planner", &first_message).await })
+        }
+        StartMode::Plan => spawn_phase(run.clone(), async move { orchestrator.plan(&run, None).await }),
+    }
     Ok(run_id)
 }
 
@@ -156,6 +201,32 @@ async fn start_run(
 #[tauri::command]
 fn run_events(state: State<'_, AppState>, run_id: String) -> CommandResult<Vec<Event>> {
     Ok(state.find(&run_id)?.0.events())
+}
+
+/// Send the user's message to one agent.
+#[tauri::command]
+fn send_message(
+    state: State<'_, AppState>,
+    run_id: String,
+    agent: String,
+    message: String,
+) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    can_chat(&run, &agent, &message)?;
+    let message = message.trim().to_string();
+    spawn_phase(run.clone(), async move { orchestrator.chat(&run, &agent, &message).await });
+    Ok(())
+}
+
+/// Ask the planner for a plan, from the request or the conversation so far.
+#[tauri::command]
+fn make_plan(state: State<'_, AppState>, run_id: String, guidance: Option<String>) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    if !run.is_at_rest() {
+        return Err("Wait until the agents have finished.".to_string());
+    }
+    spawn_phase(run.clone(), async move { orchestrator.plan(&run, guidance.as_deref()).await });
+    Ok(())
 }
 
 #[tauri::command]
@@ -176,9 +247,8 @@ fn approve_plan(state: State<'_, AppState>, run_id: String, tasks: Vec<Task>) ->
 #[tauri::command]
 fn send_back(state: State<'_, AppState>, run_id: String, worker: usize) -> CommandResult<()> {
     let (run, orchestrator) = state.find(&run_id)?;
-    let at_rest = matches!(run.state(), RunState::Done | RunState::Stopped | RunState::Failed);
-    if !at_rest || run.is_busy() {
-        return Err("Wait for the run to finish first.".to_string());
+    if !run.is_at_rest() {
+        return Err("Wait until the agents have finished.".to_string());
     }
     if run.review(worker).is_none() {
         return Err("That worker has no review to act on.".to_string());
@@ -196,7 +266,7 @@ fn stop_run(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
 /// Do one phase in the background so the command can return right away.
 fn spawn_phase<F>(run: Arc<Run>, work: F)
 where
-    F: std::future::Future<Output = Result<(), agent_console_core::AgentError>> + Send + 'static,
+    F: std::future::Future<Output = Result<(), AgentError>> + Send + 'static,
 {
     tauri::async_runtime::spawn(supervised(run, work));
 }
@@ -215,12 +285,24 @@ fn expand_home(path: &str) -> PathBuf {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
+        .setup(|app| {
+            // ~/Library/Application Support/<identifier>/settings.json on macOS.
+            let settings_path = app.path().app_config_dir()?.join(SETTINGS_FILE);
+            let (settings, problem) = settings::load(&settings_path);
+            if let Some(problem) = problem {
+                eprintln!("{problem}");
+            }
+            app.manage(AppState::new(settings, settings_path));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            save_settings,
             pick_folder,
             start_run,
             run_events,
+            send_message,
+            make_plan,
             approve_plan,
             send_back,
             stop_run
@@ -240,5 +322,12 @@ mod tests {
         assert_eq!(expand_home("~/projects/x"), home.join("projects/x"));
         assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand_home("~other/x"), PathBuf::from("~other/x"));
+    }
+
+    #[test]
+    fn start_modes_come_from_the_page_in_snake_case() {
+        let mode: StartMode = serde_json::from_str("\"brainstorm\"").unwrap();
+        assert!(matches!(mode, StartMode::Brainstorm));
+        assert!(serde_json::from_str::<StartMode>("\"build\"").is_err());
     }
 }

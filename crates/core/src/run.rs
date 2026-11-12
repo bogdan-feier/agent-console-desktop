@@ -19,6 +19,10 @@ use crate::event::{AgentStatus, Event, EventKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
+    /// Nothing running yet; the user can talk to the planner or make a plan.
+    Ready,
+    /// The user sent a message and an agent is replying.
+    Chatting,
     Planning,
     AwaitingApproval,
     Building,
@@ -46,8 +50,9 @@ struct Inner {
     events: Vec<Event>,
     tasks: Vec<Task>,
     running_agents: BTreeSet<String>,
-    /// Worker number -> session ID, so a worker can be resumed for a fix.
-    worker_sessions: HashMap<usize, String>,
+    /// Agent ID -> its latest session ID, so the agent can be resumed and
+    /// remembers the conversation (for a fix, or when the user talks to it).
+    sessions: HashMap<String, String>,
     worker_reports: HashMap<usize, String>,
     reviews: HashMap<usize, Review>,
     /// Present while a phase is running; sending on it stops that phase.
@@ -62,11 +67,11 @@ impl Run {
             request: request.into(),
             sink,
             inner: Mutex::new(Inner {
-                state: RunState::Planning,
+                state: RunState::Ready,
                 events: Vec::new(),
                 tasks: Vec::new(),
                 running_agents: BTreeSet::new(),
-                worker_sessions: HashMap::new(),
+                sessions: HashMap::new(),
                 worker_reports: HashMap::new(),
                 reviews: HashMap::new(),
                 stop_signal: None,
@@ -132,20 +137,21 @@ impl Run {
         self.lock().tasks.get(number.wrapping_sub(1)).cloned()
     }
 
-    pub fn worker_session(&self, number: usize) -> Option<String> {
-        self.lock().worker_sessions.get(&number).cloned()
+    /// The latest session of an agent, if it has finished one successfully.
+    pub fn session(&self, agent: &str) -> Option<String> {
+        self.lock().sessions.get(agent).cloned()
+    }
+
+    pub(crate) fn record_session(&self, agent: &str, session: String) {
+        self.lock().sessions.insert(agent.to_string(), session);
     }
 
     pub fn worker_report(&self, number: usize) -> Option<String> {
         self.lock().worker_reports.get(&number).cloned()
     }
 
-    pub(crate) fn record_worker(&self, number: usize, report: String, session: Option<String>) {
-        let mut inner = self.lock();
-        inner.worker_reports.insert(number, report);
-        if let Some(session) = session {
-            inner.worker_sessions.insert(number, session);
-        }
+    pub(crate) fn record_worker(&self, number: usize, report: String) {
+        self.lock().worker_reports.insert(number, report);
     }
 
     pub fn review(&self, number: usize) -> Option<Review> {
@@ -158,7 +164,21 @@ impl Run {
 
     // --- Stopping ---------------------------------------------------------------
 
-    /// True while a phase (planning, building, reviewing) is running.
+    /// True when nothing is running and the user may start something (chat, plan,
+    /// send back).
+    pub fn is_at_rest(&self) -> bool {
+        let at_rest = matches!(
+            self.state(),
+            RunState::Ready
+                | RunState::AwaitingApproval
+                | RunState::Done
+                | RunState::Stopped
+                | RunState::Failed
+        );
+        at_rest && !self.is_busy()
+    }
+
+    /// True while a phase (chatting, planning, building, reviewing) is running.
     pub fn is_busy(&self) -> bool {
         self.lock().stop_signal.is_some()
     }

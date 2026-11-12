@@ -34,25 +34,51 @@ open "target/release/bundle/macos/Agent Console.app"
 
 | Command | What it does |
 |---|---|
-| `make dev` | Run the app from source. Rust changes rebuild and restart it. |
-| `make demo` | The same, with demo mode on: scripted agents, nothing edited, nothing spent. |
-| `make test` | Run all tests. They use a fake `claude`, so they never call the real one. |
-| `make lint` | Check formatting and run clippy. |
-| `make build` | Build `Agent Console.app`. |
+| `cargo tauri dev` | Run the app from source. Changes to Rust or to `ui/` reload it. |
+| `AGENT_CONSOLE_DEMO=1 cargo tauri dev` | The same, with demo mode on: scripted agents, nothing edited, nothing spent. |
+| `cargo test --workspace` | Run all tests. They use a fake `claude`, so they never call the real one. |
+| `cargo fmt --all` | Format the Rust code. |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Run the linter; warnings count as errors. |
+| `cargo tauri build` | Build `Agent Console.app` into `target/release/bundle/macos/`. |
 
-Changes to files in `ui/` show up after reloading the window (Cmd+R) in `make dev`.
+To let Claude Code run the test and lint commands in this repo without asking each time:
+
+```bash
+mkdir -p .claude && cp docs/claude-settings.example.json .claude/settings.json
+```
 
 ## How a run goes
 
-1. **Plan.** The planner explores the project and proposes tasks. Nothing is edited.
-2. **You approve.** Edit the task titles, instructions or file lists if you like, then
-   approve. This is the one point where a person decides.
-3. **Build.** The workers run in parallel, each on its own task and its own files.
-4. **Review.** Each reviewer checks one worker and answers "Approved" or "Needs changes".
-5. **Fix (optional).** "Send back to Worker N" gives the review to the same worker, which
-   still remembers its task, and then reviews it again.
+1. **Brainstorm (optional).** Type what you want and press **Brainstorm**. The planner reads
+   the project and discusses it with you: options, trade-offs, questions. Keep talking in
+   the box at the bottom of the planner's panel (Cmd+Enter sends). Nothing is edited.
+   Press **Plan right away** instead to skip the discussion.
+2. **Make plan.** When you are ready, press **Make plan**. The planner turns the
+   conversation into up to two tasks. Anything typed in the box is passed along as extra
+   direction ("keep it in one file").
+3. **Adjust or approve.** Edit the tasks directly, or tell the planner what to change and
+   press Make plan again. Then approve. This is the one point where work starts.
+4. **Build.** The workers run in parallel, each on its own task and its own files.
+5. **Review.** Each reviewer checks one worker and answers "Approved" or "Needs changes".
+6. **Follow up.** Every agent that has worked has a message box. Ask a worker for a change,
+   ask a reviewer why it decided something, or press "Send back to Worker N" to hand it the
+   review. Each agent continues its own session, so it remembers what it did and said.
+   You can also make a new plan for a next round.
 
-"Stop" ends the current phase and kills the `claude` processes it started.
+"Stop" ends whatever is running and kills the `claude` processes it started.
+
+## Settings
+
+The **Settings** button sets, for the planner, the workers and the reviewers:
+
+- **Model:** Opus, Sonnet, Haiku, or any model ID you type under "Other".
+- **Effort:** how hard the model thinks before answering (Low to Max). "Default" leaves it to
+  Claude Code. Higher effort is slower and uses more of your limits.
+
+It also sets the spending cap per agent session. Changes apply to the next agent that
+starts, even in the middle of a run. They are saved in
+`~/Library/Application Support/dev.agentconsole.desktop/settings.json`. The starting
+defaults are the constants at the top of `crates/core/src/config.rs`.
 
 ## Signing in
 
@@ -71,7 +97,8 @@ API keys.
 
 | To change | Edit |
 |---|---|
-| Models, the spending cap, allowed shell commands, role instructions | `crates/core/src/config.rs` |
+| Default models and cap, allowed shell commands, role instructions | `crates/core/src/config.rs` |
+| What the Settings window can change, and how it is saved | `crates/core/src/settings.rs` |
 | The order agents run in | `crates/core/src/orchestrator.rs` |
 | How `claude` is started, or how its output is read | `crates/core/src/claude/` |
 | What the page looks like | `ui/styles.css`, `ui/index.html` |
@@ -97,8 +124,9 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 - **Shell commands are limited.** Agents may run the commands in `CHECK_COMMANDS`
   (`config.rs`) plus whatever the project's `.claude/settings.json` allows. Everything
   else is refused and shows up in the panel as "Refused or failed".
-- **Each session has a cap.** A session stops at `MAX_BUDGET_USD_PER_AGENT` (5 dollars of
-  API-equivalent usage by default).
+- **Each session has a cap.** A session stops at the spending cap in Settings (5 dollars of
+  API-equivalent usage by default). Long conversations with one agent count toward the same
+  session, so a long brainstorm can reach it.
 - **Runs live in memory.** Quitting the app forgets them. The edits the agents made stay
   on disk.
 - **No official SDK underneath.** There is no Agent SDK for Rust, so this app reads the
@@ -109,6 +137,7 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 
 | What you see | What to do |
 |---|---|
+| An agent fails right after you change its effort | Some models do not support every effort level. Set it back to Default. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |
 | "Claude could not sign in" in the planner panel | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
 | A tool line says "Refused or failed" | The command is not on the allow list. Add it to `CHECK_COMMANDS` or to the project's `.claude/settings.json`. |

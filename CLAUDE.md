@@ -2,16 +2,20 @@
 
 Agent Console: a macOS desktop app (Tauri 2, Rust) that runs a planner (Opus), two
 workers (Sonnet) and two reviewers (Sonnet) on a project by driving the `claude` CLI.
+The user can brainstorm with the planner, message any agent that has worked, and change
+each role's model and effort in Settings.
 
 ## Commands
-- Run from source: `make dev` (demo mode: `make demo`)
-- Tests: `make test`
-- Format and lint: `make fmt`, `make lint` (clippy warnings are errors)
-- Build the .app: `make build`
+- Run from source: `cargo tauri dev` (demo mode: `AGENT_CONSOLE_DEMO=1 cargo tauri dev`)
+- Tests: `cargo test --workspace`
+- Format: `cargo fmt --all`
+- Lint: `cargo clippy --workspace --all-targets -- -D warnings` (warnings are errors)
+- Build the .app: `cargo tauri build`
 
 ## Layout
 - `crates/core/` is the engine. No Tauri, no UI. Everything here is unit-testable.
-  - `config.rs`: models, permissions, role instructions. Tunables go here as named constants.
+  - `config.rs`: default models, permissions, role instructions. Tunables go here as named constants.
+  - `settings.rs`: what the Settings window changes (model and effort per role, budget), and its file.
   - `orchestrator.rs`: the plan, build, review flow.
   - `claude/`: the only code that starts or parses the `claude` program.
 - `src-tauri/` is the app shell: commands the page calls, and event forwarding. Keep it thin.

@@ -23,8 +23,8 @@
 ```
 
 - **`ui/`** draws the window's contents. It knows nothing about agents; it shows events.
-- **`src-tauri/`** is small on purpose. It exposes seven commands to the page and forwards
-  every event from the engine to the window.
+- **`src-tauri/`** is small on purpose. It exposes the commands the page calls, keeps the
+  settings file, and forwards every event from the engine to the window.
 - **`crates/core/`** does the work and has no UI code, so it is tested without a window.
 
 ## What happens when you press "Start planning"
@@ -40,6 +40,29 @@
 7. `handle()` in `ui/app.js` updates the matching panel.
 
 Approving the plan and "Send back" work the same way with `approve_plan` and `send_back`.
+
+## Talking to agents
+
+Every agent session ends with a session ID, which `run_agent` stores on the `Run` under the
+agent's ID. Sending a message (`send_message`, then `Orchestrator::chat`) starts `claude`
+again with `--resume=<that session>`, so the agent continues where it left off. While
+chatting, agents use the "chat" version of their spec (`config::chat_spec`): same model and
+tools, different instructions, and no JSON schema, so they answer in plain text.
+
+"Make plan" after a brainstorm resumes the planner's session too, this time with the plan
+schema, so the plan reflects the conversation.
+
+`orchestrator::can_chat` decides who may be messaged: the planner always, the others only
+once they have finished a turn, and nobody while something is running.
+
+## Settings
+
+`settings.rs` holds the model and effort for each role, and the spending cap. The app loads
+them at start-up (`setup` in `src-tauri/src/lib.rs`) into a `SharedSettings`, an
+`Arc<RwLock<Settings>>` that every orchestrator holds. The orchestrator reads it each time it
+starts an agent, which is why a change applies to the next agent even mid-run. Saving
+validates first (model names become a command-line argument, so they are checked) and writes
+the file atomically.
 
 ## Events
 
@@ -73,8 +96,8 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 
 | Where | What it covers |
 |---|---|
-| `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, command line, JSON parsing, PATH handling |
-| `crates/core/tests/flow.rs` | The whole plan, build, review, fix and stop flow with the scripted demo agents |
+| `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
+| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: brainstorm, plan, build, review, follow-ups, fix, stop, live settings changes |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing |
 
 Nothing in the tests calls the real `claude`.
@@ -90,6 +113,8 @@ Nothing in the tests calls the real `claude`.
 | `trait` (`AgentRunner`) | A set of methods a type promises to have. | An abstract base class or a `Protocol` |
 | `Arc<T>` | A shared pointer several tasks can hold at once. | Ordinary Python references |
 | `Mutex<T>` | Data that must be locked before use, so two tasks never change it at once. | `threading.Lock` around a value |
+| `RwLock<T>` | Like `Mutex`, but many readers may hold it at once; a writer waits for them. | A readers-writer lock |
+| `..planner(settings)` | "The rest of the fields come from this other value." | `dataclasses.replace(planner, ...)` |
 | `async fn`, `.await` | The same idea as in Python. | `async def`, `await` |
 | `tokio::select!` | Wait for whichever of several things finishes first. | `asyncio.wait(..., return_when=FIRST_COMPLETED)` |
 | `impl Drop` | Code that runs when a value goes away, however that happens. | `try/finally` or a context manager's `__exit__` |

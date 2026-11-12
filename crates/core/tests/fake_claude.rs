@@ -18,6 +18,7 @@ use agent_console_core::claude::ClaudeRunner;
 use agent_console_core::config::{self, AuthMode};
 use agent_console_core::orchestrator::supervised;
 use agent_console_core::runner::run_agent;
+use agent_console_core::settings::{self, Effort, Settings};
 use agent_console_core::{Orchestrator, RunState};
 use common::{new_run, Collected};
 use tempfile::TempDir;
@@ -73,7 +74,8 @@ async fn a_successful_session_becomes_events_and_an_answer() {
     let run = new_run(project.path(), &collected);
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
 
-    let output = run_agent(&runner, &run, &config::planner(), "Plan this.", None).await.unwrap();
+    let output =
+        run_agent(&runner, &run, &config::planner(&Settings::default()), "Plan this.", None).await.unwrap();
 
     assert_eq!(output.text, "All done.");
     assert_eq!(output.session_id.as_deref(), Some("sess-1"));
@@ -98,7 +100,7 @@ async fn the_prompt_goes_to_stdin_and_the_process_runs_in_the_project() {
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
 
     let prompt = "Line one\nLine two with \"quotes\" and $VARIABLES";
-    run_agent(&runner, &run, &config::worker(1), prompt, Some("sess-0")).await.unwrap();
+    run_agent(&runner, &run, &config::worker(&Settings::default(), 1), prompt, Some("sess-0")).await.unwrap();
 
     // The log files were written relative to the process's working directory.
     assert_eq!(read(&project, "fake-prompt.txt"), prompt);
@@ -116,13 +118,13 @@ async fn the_api_key_is_hidden_unless_api_key_auth_is_chosen() {
     let with_login = project("ok");
     let run = new_run(with_login.path(), &Collected::default());
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
-    run_agent(&runner, &run, &config::planner(), "x", None).await.unwrap();
+    run_agent(&runner, &run, &config::planner(&Settings::default()), "x", None).await.unwrap();
     assert_eq!(read(&with_login, "fake-key.txt").trim(), "unset");
 
     let with_key = project("ok");
     let run = new_run(with_key.path(), &Collected::default());
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ApiKey);
-    run_agent(&runner, &run, &config::planner(), "x", None).await.unwrap();
+    run_agent(&runner, &run, &config::planner(&Settings::default()), "x", None).await.unwrap();
     assert_eq!(read(&with_key, "fake-key.txt").trim(), "set");
 }
 
@@ -133,7 +135,8 @@ async fn a_failed_sign_in_explains_how_to_log_in() {
     let run = new_run(project.path(), &collected);
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
 
-    let error = run_agent(&runner, &run, &config::planner(), "x", None).await.unwrap_err();
+    let error =
+        run_agent(&runner, &run, &config::planner(&Settings::default()), "x", None).await.unwrap_err();
 
     assert!(error.to_string().contains("/login"), "{error}");
     assert_eq!(collected.statuses("planner"), ["running", "error"]);
@@ -146,7 +149,8 @@ async fn hitting_the_budget_cap_is_reported_by_its_name() {
     let run = new_run(project.path(), &Collected::default());
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
 
-    let error = run_agent(&runner, &run, &config::worker(1), "x", None).await.unwrap_err();
+    let error =
+        run_agent(&runner, &run, &config::worker(&Settings::default(), 1), "x", None).await.unwrap_err();
     assert_eq!(error.to_string(), "error_max_budget_usd");
 }
 
@@ -156,7 +160,8 @@ async fn a_crash_reports_what_the_program_printed() {
     let run = new_run(project.path(), &Collected::default());
     let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
 
-    let error = run_agent(&runner, &run, &config::planner(), "x", None).await.unwrap_err();
+    let error =
+        run_agent(&runner, &run, &config::planner(&Settings::default()), "x", None).await.unwrap_err();
     assert!(error.to_string().contains("unknown option"), "{error}");
 }
 
@@ -170,7 +175,8 @@ async fn a_missing_program_is_a_clear_error() {
     };
     let runner = ClaudeRunner::new(nowhere, AuthMode::ClaudeLogin);
 
-    let error = run_agent(&runner, &run, &config::planner(), "x", None).await.unwrap_err();
+    let error =
+        run_agent(&runner, &run, &config::planner(&Settings::default()), "x", None).await.unwrap_err();
     assert!(error.to_string().starts_with("Could not start claude"), "{error}");
 }
 
@@ -180,7 +186,11 @@ async fn a_failed_planner_fails_the_run() {
     let run = new_run(project.path(), &Collected::default());
     let runner = Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin));
 
-    supervised(run.clone(), Orchestrator::new(runner).plan(&run)).await;
+    supervised(
+        run.clone(),
+        Orchestrator::new(runner, settings::shared(Settings::default())).plan(&run, None),
+    )
+    .await;
     assert_eq!(run.state(), RunState::Failed);
 }
 
@@ -189,11 +199,14 @@ async fn stopping_kills_the_process_and_its_children() {
     let project = project("hang");
     let collected = Collected::default();
     let run = new_run(project.path(), &collected);
-    let orchestrator = Orchestrator::new(Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)));
+    let orchestrator = Orchestrator::new(
+        Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
+        settings::shared(Settings::default()),
+    );
 
     let job = {
         let run = run.clone();
-        tokio::spawn(async move { supervised(run.clone(), orchestrator.plan(&run)).await })
+        tokio::spawn(async move { supervised(run.clone(), orchestrator.plan(&run, None)).await })
     };
     wait_for_file(&project.path().join("fake-child-pid.txt")).await;
     let pid = read(&project, "fake-pid.txt");
@@ -213,4 +226,69 @@ async fn stopping_kills_the_process_and_its_children() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the fake claude process (or its child) is still running after stop");
+}
+
+fn lines(project: &TempDir, name: &str) -> Vec<String> {
+    read(project, name).lines().map(str::to_string).collect()
+}
+
+fn value_after(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|arg| arg == flag).map(|position| args[position + 1].clone())
+}
+
+#[tokio::test]
+async fn model_and_effort_from_settings_reach_the_command_line() {
+    let project = project("ok");
+    let run = new_run(project.path(), &Collected::default());
+    let runner = ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin);
+    let mut settings = Settings::default();
+    settings.planner.model = "claude-opus-5-5".to_string();
+    settings.planner.effort = Some(Effort::Xhigh);
+
+    run_agent(&runner, &run, &config::planner(&settings), "x", None).await.unwrap();
+
+    let args = lines(&project, "fake-args.txt");
+    assert_eq!(value_after(&args, "--model").as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(value_after(&args, "--effort").as_deref(), Some("xhigh"));
+}
+
+#[tokio::test]
+async fn planning_after_a_brainstorm_resumes_it_and_asks_for_the_plan_shape() {
+    let project = project("ok");
+    let run = new_run(project.path(), &Collected::default());
+    let orchestrator = Orchestrator::new(
+        Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
+        settings::shared(Settings::default()),
+    );
+
+    // The brainstorm: no schema, so the planner answers freely.
+    supervised(run.clone(), orchestrator.chat(&run, "planner", "What do you think?")).await;
+    let chat_args = lines(&project, "fake-args.txt");
+    assert!(!chat_args.contains(&"--json-schema".to_string()));
+    assert!(!chat_args.iter().any(|arg| arg.starts_with("--resume")));
+    assert_eq!(run.session("planner").as_deref(), Some("sess-1"));
+
+    // Making the plan continues that same session and asks for structured output.
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    let plan_args = lines(&project, "fake-args.txt");
+    assert!(plan_args.contains(&"--resume=sess-1".to_string()));
+    assert!(plan_args.contains(&"--json-schema".to_string()));
+    assert!(read(&project, "fake-prompt.txt").starts_with("Turn what we discussed"));
+    assert_eq!(run.state(), RunState::AwaitingApproval);
+}
+
+#[tokio::test]
+async fn a_failed_chat_reply_does_not_fail_the_run() {
+    let project = project("auth");
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+    let orchestrator = Orchestrator::new(
+        Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
+        settings::shared(Settings::default()),
+    );
+
+    supervised(run.clone(), orchestrator.chat(&run, "planner", "hello")).await;
+
+    assert_eq!(run.state(), RunState::Ready);
+    assert_eq!(collected.statuses("planner"), ["running", "error"]);
 }

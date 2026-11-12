@@ -1,4 +1,4 @@
-//! The whole flow with the scripted demo agents: Jarvis, planning, a round with
+//! The whole flow with the scripted demo agents: the dispatcher, planning, a round with
 //! three workers and one review, sending work back, applying and discarding.
 //! (Demo agents touch no files, so these use the shared-folder mode; the real
 //! worktrees are tested in `worktree_round.rs`.)
@@ -35,21 +35,21 @@ async fn reviewed_run(collected: &Collected) -> (Arc<agent_console_core::Run>, O
 }
 
 #[tokio::test]
-async fn jarvis_answers_quick_questions_itself() {
+async fn dispatcher_answers_quick_questions_itself() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
     supervised(run.clone(), instant_demo().ask(&run, "What does stats.py do?")).await;
 
     assert_eq!(run.state(), RunState::Ready);
-    assert_eq!(collected.statuses("jarvis"), ["running", "done"]);
+    assert_eq!(collected.statuses("dispatcher"), ["running", "done"]);
     assert!(collected.statuses("planner").is_empty(), "the planner was not needed");
     let answer = collected.of_type("text").last().unwrap()["text"].as_str().unwrap().to_string();
     assert!(answer.contains("count_words"), "{answer}");
 }
 
 #[tokio::test]
-async fn jarvis_passes_ideas_to_the_planner_to_talk_through() {
+async fn dispatcher_passes_ideas_to_the_planner_to_talk_through() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
@@ -58,13 +58,13 @@ async fn jarvis_passes_ideas_to_the_planner_to_talk_through() {
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(collected.statuses("planner"), ["running", "done"]);
     assert_eq!(run.session("planner").as_deref(), Some("demo-planner"));
-    // The user's message appears in both panels: Jarvis's, and the planner's.
+    // The user's message appears in both panels: the dispatcher's, and the planner's.
     let to: Vec<_> = collected.of_type("user_message").iter().map(|e| e["agent"].clone()).collect();
-    assert_eq!(to, ["jarvis", "planner"]);
+    assert_eq!(to, ["dispatcher", "planner"]);
 }
 
 #[tokio::test]
-async fn jarvis_passes_clear_requests_on_to_be_planned() {
+async fn dispatcher_passes_clear_requests_on_to_be_planned() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
@@ -146,7 +146,7 @@ async fn who_can_be_talked_to_and_when() {
 
     assert!(can_chat(&run, "planner", "hello").is_ok());
     assert!(can_chat(&run, "planner", "   ").is_err());
-    assert!(can_chat(&run, "jarvis", "hello").is_err(), "Jarvis is reached through the main box");
+    assert!(can_chat(&run, "dispatcher", "hello").is_err(), "The dispatcher is reached through the main box");
     assert!(can_chat(&run, "worker-1", "hello").is_err(), "worker has not worked yet");
     assert!(can_chat(&run, "reviewer", "hello").is_err());
 

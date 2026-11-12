@@ -7,7 +7,7 @@
 //! The team, for one project:
 //!
 //! ```text
-//! you -> Jarvis (Haiku) -> answers quick questions itself, or passes the message on
+//! you -> dispatcher (Haiku) -> answers quick questions itself, or passes the message on
 //!                          to the planner, to brainstorm or to plan
 //! planner (Opus) -> you approve -> up to 3 workers (Sonnet), each in its own git worktree
 //!                -> one reviewer sees all their changes merged -> you apply or discard
@@ -41,7 +41,7 @@ pub const AUTH: AuthMode = AuthMode::ClaudeLogin;
 // "opus", "sonnet" and "haiku" are aliases for the newest model of that family.
 // A full model ID works here too.
 
-pub const JARVIS_MODEL: &str = "haiku";
+pub const DISPATCHER_MODEL: &str = "haiku";
 pub const PLANNER_MODEL: &str = "opus";
 pub const WORKER_MODEL: &str = "sonnet";
 pub const REVIEWER_MODEL: &str = "sonnet";
@@ -79,7 +79,7 @@ pub const CHECK_COMMANDS: &[&str] = &[
 
 /// Most assistant turns (one reply, usually with tool calls) a session may take before
 /// it stops. A stopped agent can be told to continue from its message box.
-pub const JARVIS_MAX_TURNS: u32 = 8;
+pub const DISPATCHER_MAX_TURNS: u32 = 8;
 pub const PLANNER_MAX_TURNS: u32 = 30;
 pub const WORKER_MAX_TURNS: u32 = 60;
 pub const REVIEWER_MAX_TURNS: u32 = 30;
@@ -96,8 +96,8 @@ pub const PARALLEL_START_GAP: Duration = Duration::from_secs(5);
 // the agent to work economically: every file it reads and every tool result is sent
 // back to the model on each following turn, so they add up.
 
-const JARVIS_INSTRUCTIONS: &str = "\
-You are Jarvis, the front desk of a small team working on this one project: a planner
+const DISPATCHER_INSTRUCTIONS: &str = "\
+You are the dispatcher, the front desk of a small team working on this one project: a planner
 (brainstorms with the user and writes plans), up to 3 workers (write the code) and a reviewer.
 You cannot edit files. For each message from the user, choose one route:
 
@@ -192,15 +192,15 @@ evidence. You cannot edit files. Reuse what you already read in this session ins
 it again.";
 
 // --- Shapes of the structured answers ----------------------------------------
-// Jarvis, the planner and the reviewer must answer with JSON matching these
+// The dispatcher, the planner and the reviewer must answer with JSON matching these
 // schemas, so the app can act on the answer instead of guessing from free text.
 // The Rust types below mirror the schemas field for field.
 
-/// Where Jarvis sends a message.
+/// Where the dispatcher sends a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Route {
-    /// Jarvis answered it itself.
+    /// The dispatcher answered it itself.
     Answer,
     /// Pass it to the planner to discuss.
     Brainstorm,
@@ -208,7 +208,7 @@ pub enum Route {
     Plan,
 }
 
-/// What Jarvis returns.
+/// What the dispatcher returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Routing {
     pub route: Route,
@@ -328,14 +328,14 @@ fn review_schema() -> Value {
 
 // --- The agents --------------------------------------------------------------
 
-pub const JARVIS_ID: &str = "jarvis";
+pub const DISPATCHER_ID: &str = "dispatcher";
 pub const PLANNER_ID: &str = "planner";
 pub const REVIEWER_ID: &str = "reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    Jarvis,
+    Dispatcher,
     Planner,
     Worker,
     Reviewer,
@@ -369,20 +369,20 @@ pub struct AgentSpec {
     pub chat: bool,
 }
 
-/// Jarvis, the cheap front desk: answers quick questions or routes the message on.
-pub fn jarvis(settings: &Settings) -> AgentSpec {
+/// The dispatcher, the cheap front desk: answers quick questions or routes the message on.
+pub fn dispatcher(settings: &Settings) -> AgentSpec {
     AgentSpec {
-        id: JARVIS_ID.to_string(),
-        role: Role::Jarvis,
-        label: "Jarvis".to_string(),
-        model: settings.jarvis.model.clone(),
-        effort: settings.jarvis.effort,
-        instructions: JARVIS_INSTRUCTIONS,
+        id: DISPATCHER_ID.to_string(),
+        role: Role::Dispatcher,
+        label: "Dispatcher".to_string(),
+        model: settings.dispatcher.model.clone(),
+        effort: settings.dispatcher.effort,
+        instructions: DISPATCHER_INSTRUCTIONS,
         tools: READ_TOOLS.to_vec(),
         allowed: READ_TOOLS.to_vec(),
         output_schema: Some(routing_schema()),
         max_budget_usd: settings.max_budget_usd,
-        max_turns: JARVIS_MAX_TURNS,
+        max_turns: DISPATCHER_MAX_TURNS,
         use_mcp_servers: settings.use_mcp_servers,
         chat: true,
     }
@@ -478,7 +478,7 @@ pub fn reviewer_chat(settings: &Settings) -> AgentSpec {
 }
 
 /// The chat version of the agent with this ID, or `None` if you cannot message it
-/// directly (Jarvis is reached through the main message box instead).
+/// directly (the dispatcher is reached through the main message box instead).
 pub fn chat_spec(settings: &Settings, agent_id: &str) -> Option<AgentSpec> {
     match agent_id {
         PLANNER_ID => Some(planner_chat(settings)),
@@ -495,7 +495,7 @@ pub fn worker_number(agent_id: &str) -> Option<usize> {
 
 /// Every agent, in the order the page lays them out.
 pub fn all_agents(settings: &Settings) -> Vec<AgentSpec> {
-    let mut agents = vec![jarvis(settings), planner(settings)];
+    let mut agents = vec![dispatcher(settings), planner(settings)];
     agents.extend((1..=WORKER_COUNT).map(|number| worker(settings, number)));
     agents.push(reviewer(settings));
     agents
@@ -518,9 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn the_team_is_jarvis_planner_three_workers_and_one_reviewer() {
+    fn the_team_is_dispatcher_planner_three_workers_and_one_reviewer() {
         let ids: Vec<String> = all_agents(&defaults()).into_iter().map(|spec| spec.id).collect();
-        assert_eq!(ids, ["jarvis", "planner", "worker-1", "worker-2", "worker-3", "reviewer"]);
+        assert_eq!(ids, ["dispatcher", "planner", "worker-1", "worker-2", "worker-3", "reviewer"]);
     }
 
     #[test]
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(worker(&settings, 1).max_turns, WORKER_MAX_TURNS);
         assert_eq!(worker_chat(&settings, 1).max_turns, CHAT_MAX_TURNS);
         assert_eq!(planner_chat(&settings).max_turns, CHAT_MAX_TURNS);
-        assert!(jarvis(&settings).max_turns < PLANNER_MAX_TURNS);
+        assert!(dispatcher(&settings).max_turns < PLANNER_MAX_TURNS);
         assert!(!planner(&settings).use_mcp_servers, "MCP servers are off by default");
     }
 
@@ -538,7 +538,7 @@ mod tests {
         let mut settings = defaults();
         settings.planner.effort = Some(Effort::Max);
         settings.reviewer.model = "haiku".to_string();
-        assert_eq!(jarvis(&settings).model, "haiku");
+        assert_eq!(dispatcher(&settings).model, "haiku");
         assert_eq!(planner(&settings).model, "opus");
         assert_eq!(planner(&settings).effort, Some(Effort::Max));
         assert_eq!(worker(&settings, 3).model, "sonnet");
@@ -557,7 +557,7 @@ mod tests {
         assert!(!reviewer_chat.tools.contains(&"Edit"));
 
         assert_eq!(chat_spec(&settings, "worker-3").unwrap().id, "worker-3");
-        for not_messageable in ["jarvis", "worker-0", "worker-4", "reviewer-1", "boss", "worker"] {
+        for not_messageable in ["dispatcher", "worker-0", "worker-4", "reviewer-1", "boss", "worker"] {
             assert!(chat_spec(&settings, not_messageable).is_none(), "{not_messageable}");
         }
     }

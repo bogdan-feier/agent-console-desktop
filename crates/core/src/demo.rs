@@ -15,7 +15,7 @@ use crate::orchestrator::FIX_PROMPT_MARKER;
 use crate::run::Run;
 use crate::runner::{AgentError, AgentOutput, AgentRunner};
 
-/// Words that make the demo Jarvis treat a message as a request to build something.
+/// Words that make the demo dispatcher treat a message as a request to build something.
 const BUILD_WORDS: &[&str] = &["add", "build", "implement", "create", "make", "write", "fix", "plan"];
 /// Words that make it treat a message as a quick question it can answer itself.
 const QUESTION_WORDS: &[&str] = &["what", "where", "which", "how do", "how does", "how are", "who"];
@@ -54,7 +54,7 @@ impl AgentRunner for DemoRunner {
     ) -> Result<AgentOutput, AgentError> {
         run.emit(Some(&spec.id), EventKind::AgentModel { model: format!("demo-{}", spec.model) });
         let (text, structured) = match (spec.role, spec.chat) {
-            (Role::Jarvis, _) => (String::new(), Some(self.jarvis(run, spec, prompt).await)),
+            (Role::Dispatcher, _) => (String::new(), Some(self.dispatcher(run, spec, prompt).await)),
             (Role::Planner, false) => (String::new(), Some(self.plan(run, spec).await)),
             (Role::Worker, false) => (self.work(run, spec, prompt).await, None),
             (Role::Reviewer, false) => (String::new(), Some(self.review(run, spec).await)),
@@ -74,7 +74,7 @@ impl AgentRunner for DemoRunner {
 }
 
 impl DemoRunner {
-    async fn jarvis(&self, run: &Run, spec: &AgentSpec, message: &str) -> Value {
+    async fn dispatcher(&self, run: &Run, spec: &AgentSpec, message: &str) -> Value {
         let lower = message.to_lowercase();
         let has_word = |words: &[&str]| words.iter().any(|word| lower.contains(word));
         if has_word(QUESTION_WORDS) && !has_word(BUILD_WORDS) {
@@ -162,7 +162,7 @@ impl DemoRunner {
         // The first line of the user's message, shortened, so the reply visibly answers it.
         let topic: String = prompt.lines().next().unwrap_or_default().chars().take(80).collect();
         let reply = match spec.role {
-            Role::Planner | Role::Jarvis => {
+            Role::Planner | Role::Dispatcher => {
                 self.tool(run, spec, "Grep", "def ").await;
                 self.tool(run, spec, "Read", "src/textstats/stats.py").await;
                 format!(

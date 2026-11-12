@@ -28,13 +28,13 @@
       </div>
     </div>
     <div>
-      <label for="request">Message the team (Jarvis answers or passes it on)</label>
+      <label for="request">Message the team (the dispatcher answers or passes it on)</label>
       <textarea id="request" rows="1" placeholder="Ask a question, share an idea, or ask for a change"></textarea>
     </div>
     <div class="actions">
-      <button class="primary" type="submit" id="send" title="Jarvis answers quick questions itself and passes the rest to the planner (Cmd+Enter)">Send</button>
-      <button type="button" id="send-brainstorm" title="Skip Jarvis: talk it through with the planner">Brainstorm</button>
-      <button type="button" id="send-plan" title="Skip Jarvis and the discussion: ask the planner for a plan">Plan right away</button>
+      <button class="primary" type="submit" id="send" title="The dispatcher answers quick questions itself and passes the rest to the planner (Cmd+Enter)">Send</button>
+      <button type="button" id="send-brainstorm" title="Skip the dispatcher: talk it through with the planner">Brainstorm</button>
+      <button type="button" id="send-plan" title="Skip the dispatcher and the discussion: ask the planner for a plan">Plan right away</button>
       <button type="button" id="stop" disabled>Stop</button>
       <button type="button" id="new-run" title="Start over with fresh agents (the current changes must be applied or discarded first)">New run</button>
     </div>
@@ -42,7 +42,7 @@
   </form>
 
   <div class="lanes" id="lanes">
-    <div class="lane-title plan-hue">Plan <span>Jarvis answers or passes on; the planner plans</span></div>
+    <div class="lane-title plan-hue">Plan <span>the dispatcher answers or passes on; the planner plans</span></div>
     <div class="lane-title build-hue">Build <span>each worker in its own copy of the project</span></div>
     <div class="lane-title review-hue">Review <span>one reviewer checks everything together</span></div>
   </div>

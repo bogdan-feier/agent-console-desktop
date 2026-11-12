@@ -3,7 +3,7 @@
 A macOS desktop app that runs a small team of Claude agents on one project.
 
 ```text
-you -> Jarvis -> answers quick questions itself, or passes your message to the planner
+you -> dispatcher -> answers quick questions itself, or passes your message to the planner
        planner -> talks ideas through with you, then makes a plan -> you approve
        workers -> up to 3 at the same time, each in its own copy of the project
        reviewer -> checks all their work together -> you apply it, or discard it
@@ -11,7 +11,7 @@ you -> Jarvis -> answers quick questions itself, or passes your message to the p
 
 | Agent | Default model | What it does | What it may do |
 |---|---|---|---|
-| Jarvis | Haiku | The front desk: answers quick questions, routes everything else | Read files only |
+| Dispatcher | Haiku | The front desk: answers quick questions, routes everything else | Read files only |
 | Planner | Opus | Brainstorms with you, then splits the work into up to three tasks | Read files only |
 | Workers 1 to 3 | Sonnet | Each builds one task, in its own git worktree | Read and edit files, run tests and linters |
 | Reviewer | Sonnet | Checks all the workers' changes merged together | Read files, run tests, linters and `git diff` |
@@ -62,8 +62,8 @@ The project must be a git repository. When you approve a plan, it must have no u
 changes (see "Why worktrees" below).
 
 1. **Message the team.** Type in the box at the top and press **Send** (or Cmd+Enter).
-   Jarvis answers quick questions itself ("what does this function do?"). Ideas go to the
-   planner to talk through; clear requests go to the planner to plan. To skip Jarvis, press
+   The dispatcher answers quick questions itself ("what does this function do?"). Ideas go to the
+   planner to talk through; clear requests go to the planner to plan. To skip the dispatcher, press
    **Brainstorm** or **Plan right away** instead.
 2. **Brainstorm (optional).** Keep talking to the planner in the box at the bottom of its
    panel. Nothing is edited.
@@ -80,7 +80,7 @@ changes (see "Why worktrees" below).
 7. **Apply or discard.** **Apply to project** puts the result into your project as staged
    changes: look at them with `git diff --staged` and commit them yourself. **Discard**
    throws the round away. Either way the worktrees are deleted, and you can start the next
-   round in the same run: Jarvis and the planner remember the conversation.
+   round in the same run: the dispatcher and the planner remember the conversation.
 
 **Stop** ends whatever is running and kills the `claude` processes it started. **New run**
 starts over with fresh agents (apply or discard the open round first).
@@ -109,7 +109,7 @@ temporary folder, not in your project.
 
 **Start from** fills everything in with one of three presets:
 
-| Preset | Jarvis | Planner | Workers | Reviewer | Cap per session |
+| Preset | Dispatcher | Planner | Workers | Reviewer | Cap per session |
 |---|---|---|---|---|---|
 | Lean | Haiku | Sonnet, medium effort | Sonnet, low | Sonnet, low | 3 dollars |
 | Balanced (the default) | Haiku | Opus, medium | Sonnet, medium | Sonnet, medium | 5 dollars |
@@ -152,7 +152,7 @@ that.
   which would otherwise be sent on every turn of every agent. The agents only need file and
   shell tools. (These options are only passed if your version of Claude Code lists them in
   `claude --help`, so an older version still works, just without this saving.)
-- **Jarvis first.** Quick questions are answered by Haiku, and the Opus planner only runs
+- **Dispatcher first.** Quick questions are answered by Haiku, and the Opus planner only runs
   when it is needed.
 - **Shared prompt cache.** The parts of the system prompt that change between sessions are
   moved out of it, and parallel workers start 5 seconds apart. Each can then read the
@@ -178,11 +178,11 @@ that.
 - **Try the Lean preset** for routine work, and Thorough only when quality matters most.
 - **Keep brainstorms short.** Each message resends the conversation so far (mostly from
   cache, but it grows). When you know what you want, press Make plan.
-- **Plan right away** for small, clear changes: it skips Jarvis and the brainstorm.
+- **Plan right away** for small, clear changes: it skips the dispatcher and the brainstorm.
 - **Keep the target project's `CLAUDE.md` short.** Every agent reads it at the start.
 - **Ask for one thing per round.** Two unrelated requests in one round cost more than two
   small rounds, because every agent carries both in its context.
-- **Start a new run now and then.** Jarvis and the planner keep their conversation across
+- **Start a new run now and then.** The dispatcher and the planner keep their conversation across
   rounds, which helps, but it also keeps growing. **New run** starts them fresh.
 
 ## Changing things

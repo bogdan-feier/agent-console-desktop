@@ -1,7 +1,7 @@
 # Project guide for Claude
 
 Agent Console: a macOS desktop app (Tauri 2, Rust) that runs a team on one project by
-driving the `claude` CLI: Jarvis (Haiku) answers or routes each message, a planner (Opus)
+driving the `claude` CLI: a dispatcher (Haiku) answers or routes each message, a planner (Opus)
 brainstorms and plans, up to 3 workers (Sonnet) build in their own git worktrees, and one
 reviewer checks all their work merged together. The user applies or discards each round.
 

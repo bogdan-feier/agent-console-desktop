@@ -125,8 +125,8 @@ struct RunEvent<'a> {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SendMode {
-    /// To Jarvis, which answers it or passes it on.
-    Jarvis,
+    /// To the dispatcher, which answers it or passes it on.
+    Dispatcher,
     /// Straight to the planner, to talk it through.
     Brainstorm,
     /// Straight to the planner, to make a plan.
@@ -234,7 +234,7 @@ fn dispatch(run: Arc<Run>, orchestrator: Orchestrator, message: String, mode: Se
     let task_run = run.clone();
     spawn_phase(run, async move {
         match mode {
-            SendMode::Jarvis => orchestrator.ask(&task_run, &message).await,
+            SendMode::Dispatcher => orchestrator.ask(&task_run, &message).await,
             SendMode::Brainstorm => orchestrator.chat(&task_run, PLANNER_ID, &message).await,
             SendMode::Plan => orchestrator.plan(&task_run, Some(&message)).await,
         }
@@ -400,7 +400,7 @@ mod tests {
     fn send_modes_come_from_the_page_in_snake_case() {
         let mode: SendMode = serde_json::from_str("\"brainstorm\"").unwrap();
         assert!(matches!(mode, SendMode::Brainstorm));
-        assert!(matches!(serde_json::from_str::<SendMode>("\"jarvis\"").unwrap(), SendMode::Jarvis));
+        assert!(matches!(serde_json::from_str::<SendMode>("\"dispatcher\"").unwrap(), SendMode::Dispatcher));
         assert!(serde_json::from_str::<SendMode>("\"build\"").is_err());
     }
 }

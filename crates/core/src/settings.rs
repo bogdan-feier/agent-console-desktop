@@ -9,7 +9,9 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{JARVIS_MODEL, MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_MODEL};
+use crate::config::{
+    DISPATCHER_MODEL, MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_MODEL,
+};
 
 /// Highest spending cap the Settings window accepts, in US dollars per agent session.
 pub const MAX_BUDGET_LIMIT_USD: f64 = 1000.0;
@@ -76,7 +78,9 @@ impl Preset {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub jarvis: RoleSettings,
+    /// `alias`: settings saved while this role was still called "jarvis" load too.
+    #[serde(alias = "jarvis")]
+    pub dispatcher: RoleSettings,
     pub planner: RoleSettings,
     pub worker: RoleSettings,
     pub reviewer: RoleSettings,
@@ -97,10 +101,10 @@ impl Default for Settings {
 impl Settings {
     pub fn preset(preset: Preset) -> Settings {
         use Effort::{High, Low, Medium};
-        // Jarvis stays on Haiku in every preset: routing and quick answers do not need
+        // The dispatcher stays on Haiku in every preset: routing and quick answers do not need
         // more, and it runs on every message. Not every Haiku version takes an effort
         // level, so it is left unset.
-        let jarvis = RoleSettings::new(JARVIS_MODEL, None);
+        let dispatcher = RoleSettings::new(DISPATCHER_MODEL, None);
         let (planner, worker, reviewer, budget) = match preset {
             Preset::Lean => (
                 RoleSettings::new("sonnet", Some(Medium)),
@@ -122,7 +126,7 @@ impl Settings {
                 Some(10.0),
             ),
         };
-        Settings { jarvis, planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
+        Settings { dispatcher, planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
     }
 }
 
@@ -143,7 +147,7 @@ impl Settings {
     /// Check the settings and tidy them (trim model names). Errors are shown to the user.
     pub fn validated(mut self) -> Result<Settings, String> {
         for (label, role) in [
-            ("Jarvis", &mut self.jarvis),
+            ("Dispatcher", &mut self.dispatcher),
             ("Planner", &mut self.planner),
             ("Workers", &mut self.worker),
             ("Reviewer", &mut self.reviewer),
@@ -223,7 +227,7 @@ mod tests {
         assert_eq!(settings, Settings::preset(Preset::Balanced));
         assert_eq!(settings.planner.model, "opus");
         assert_eq!(settings.worker.model, "sonnet");
-        assert_eq!(settings.jarvis.model, "haiku");
+        assert_eq!(settings.dispatcher.model, "haiku");
         assert_eq!(settings.reviewer.effort, Some(Effort::Medium));
         assert!(!settings.use_mcp_servers);
     }
@@ -305,5 +309,13 @@ mod tests {
         assert_eq!(settings.planner.model, "sonnet");
         assert_eq!(settings.worker, Settings::default().worker);
         assert!(!settings.use_mcp_servers);
+    }
+
+    #[test]
+    fn settings_saved_under_the_old_role_name_still_load() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("settings.json");
+        fs::write(&path, r#"{"jarvis": {"model": "sonnet"}}"#).unwrap();
+        assert_eq!(load(&path).0.dispatcher.model, "sonnet");
     }
 }

@@ -33,7 +33,7 @@
    `invoke("send", ...)` after that.
 2. The command in `src-tauri/src/lib.rs` checks the action is allowed now
    (`orchestrator::can_message`), starts the work in the background, and returns at once.
-3. `Orchestrator::ask` (core) runs Jarvis through `run_agent`. Jarvis answers with JSON
+3. `Orchestrator::ask` (core) runs the dispatcher through `run_agent`. The dispatcher answers with JSON
    (`Routing` in `config.rs`): answer it itself, or pass it on to brainstorm or to plan.
 4. `ClaudeRunner::run_session` starts `claude -p --output-format stream-json ...` in the
    agent's folder (`Run::folder_for`), writes the prompt to its stdin, and reads its stdout
@@ -77,7 +77,7 @@ chatting, agents use the "chat" version of their spec (`config::chat_spec`): sam
 tools, different instructions, and no JSON schema, so they answer in plain text.
 
 "Make plan" after a brainstorm resumes the planner's session too, this time with the plan
-schema, so the plan reflects the conversation. Jarvis and the planner keep their sessions
+schema, so the plan reflects the conversation. The dispatcher and the planner keep their sessions
 across rounds; workers and the reviewer only within their round.
 
 ## Usage savings
@@ -139,7 +139,7 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 | Where | What it covers |
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
-| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: Jarvis routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
+| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: dispatcher routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
 | `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files |
 | `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes, apply refusing, cleanup |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |

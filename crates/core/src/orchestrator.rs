@@ -3,7 +3,7 @@
 //! One project, one team. A round of work goes like this:
 //!
 //! ```text
-//! your message -> Jarvis: answers it, or passes it to the planner
+//! your message -> the dispatcher: answers it, or passes it to the planner
 //! planner: brainstorms with you, then makes a plan          (ask, chat, plan)
 //! you approve -> workers build in parallel, each in its own worktree   (build)
 //!             -> the reviewer checks all their work merged together    (review)
@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 
 use crate::changes::{self, Changes};
 use crate::config::{
-    self, Plan, Review, Route, Routing, Task, JARVIS_ID, PLANNER_ID, REVIEWER_ID, WORKER_COUNT,
+    self, Plan, Review, Route, Routing, Task, DISPATCHER_ID, PLANNER_ID, REVIEWER_ID, WORKER_COUNT,
 };
 use crate::event::EventKind;
 use crate::run::{Run, RunState};
@@ -67,21 +67,21 @@ impl Orchestrator {
 
     // --- Talking ----------------------------------------------------------------------
 
-    /// Give the user's message to Jarvis, which answers it or passes it on to the
+    /// Give the user's message to the dispatcher, which answers it or passes it on to the
     /// planner (to brainstorm, or to plan). Check [`can_message`] first.
     pub async fn ask(&self, run: &Run, message: &str) -> Result<(), AgentError> {
-        let spec = config::jarvis(&self.settings());
+        let spec = config::dispatcher(&self.settings());
         let previous = run.state();
         run.set_state(RunState::Chatting);
-        run.emit(Some(JARVIS_ID), EventKind::UserMessage { text: message.to_string() });
-        let session = run.session(JARVIS_ID);
+        run.emit(Some(DISPATCHER_ID), EventKind::UserMessage { text: message.to_string() });
+        let session = run.session(DISPATCHER_ID);
         let output = run_agent(self.runner.as_ref(), run, &spec, message, session.as_deref()).await;
         run.set_state(previous);
 
-        // A failed reply is already shown in Jarvis's panel; the run carries on.
+        // A failed reply is already shown in the dispatcher's panel; the run carries on.
         let Ok(output) = output else { return Ok(()) };
-        let Ok(routing) = structured_answer::<Routing>(run, JARVIS_ID, &output) else { return Ok(()) };
-        run.emit(Some(JARVIS_ID), EventKind::Text { text: routing.reply });
+        let Ok(routing) = structured_answer::<Routing>(run, DISPATCHER_ID, &output) else { return Ok(()) };
+        run.emit(Some(DISPATCHER_ID), EventKind::Text { text: routing.reply });
         match routing.route {
             Route::Answer => Ok(()),
             Route::Brainstorm => self.chat(run, PLANNER_ID, message).await,
@@ -360,7 +360,7 @@ fn check_at_rest(run: &Run) -> Result<(), String> {
     }
 }
 
-/// May the user send `message` to Jarvis, or ask for a plan, now?
+/// May the user send `message` to the dispatcher, or ask for a plan, now?
 pub fn can_message(run: &Run, message: &str) -> Result<(), String> {
     check_message(message)?;
     check_at_rest(run)

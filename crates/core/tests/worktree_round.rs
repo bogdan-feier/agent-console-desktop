@@ -60,7 +60,7 @@ impl AgentRunner for WritingRunner {
             Role::Reviewer => {
                 Some(json!({ "verdict": "approve", "summary": "Good.", "must_fix": [], "consider": [] }))
             }
-            Role::Jarvis => None,
+            Role::Dispatcher => None,
         };
         let _ = run;
         Ok(AgentOutput {

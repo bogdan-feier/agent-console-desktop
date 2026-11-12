@@ -19,7 +19,7 @@ const STATE_WORDS = {
   stopped: "Stopped",
 };
 const EMPTY_TEXT = {
-  jarvis: "Messages from the box above come here first. Jarvis answers quick questions itself and passes the rest to the planner.",
+  dispatcher: "Messages from the box above come here first. The dispatcher answers quick questions itself and passes the rest to the planner.",
   planner: "Talk ideas through here, then press Make plan.",
   worker: "Starts when you approve a plan, in its own copy of the project. Afterwards you can message it here.",
   reviewer: "Checks all the workers' changes together when they finish. Then you apply or discard them.",
@@ -29,8 +29,8 @@ const PLACEHOLDER = {
   worker: "Ask this worker for a change",
   reviewer: "Ask the reviewer about its verdict",
 };
-const HUE = { jarvis: "plan-hue", planner: "plan-hue", worker: "build-hue", reviewer: "review-hue" };
-const ROLE_SETTINGS = { jarvis: "jarvis", planner: "planner", worker: "worker", reviewer: "reviewer" };
+const HUE = { dispatcher: "plan-hue", planner: "plan-hue", worker: "build-hue", reviewer: "review-hue" };
+const ROLE_SETTINGS = { dispatcher: "dispatcher", planner: "planner", worker: "worker", reviewer: "reviewer" };
 const BUSY_STATES = ["chatting", "planning", "building", "reviewing"];
 const REST_STATES = ["ready", "awaiting_approval", "done", "stopped", "failed"];
 const AUTH_WORDS = { claude_login: "Signed in through Claude Code", api_key: "Billing: API key" };
@@ -106,8 +106,8 @@ function buildPanels(agents) {
     root.append(header, log);
     const panel = { root, log, role: agent.role, number: Number(agent.id.split("-")[1]) || 0, hasWorked: false };
 
-    // Jarvis is reached through the main message box; everyone else has their own.
-    if (agent.role !== "jarvis") {
+    // The dispatcher is reached through the main message box; everyone else has their own.
+    if (agent.role !== "dispatcher") {
       const composer = el("form", "composer");
       const input = el("textarea");
       input.rows = 1;
@@ -466,11 +466,11 @@ function show(id) {
 
 // --- Wiring up the page ------------------------------------------------------------
 
-$("brief").addEventListener("submit", (submitted) => { submitted.preventDefault(); sendMain("jarvis"); });
+$("brief").addEventListener("submit", (submitted) => { submitted.preventDefault(); sendMain("dispatcher"); });
 $("send-brainstorm").addEventListener("click", () => sendMain("brainstorm"));
 $("send-plan").addEventListener("click", () => sendMain("plan"));
 $("request").addEventListener("keydown", (key) => {
-  if (key.key === "Enter" && (key.metaKey || key.ctrlKey)) { key.preventDefault(); sendMain("jarvis"); }
+  if (key.key === "Enter" && (key.metaKey || key.ctrlKey)) { key.preventDefault(); sendMain("dispatcher"); }
 });
 
 $("stop").addEventListener("click", () => {
@@ -498,7 +498,7 @@ $("demo").addEventListener("change", () => remember("agent-console-demo", $("dem
 // --- Settings window ---------------------------------------------------------------
 
 const SETTINGS_ROWS = [
-  ["jarvis", "Jarvis", "plan-hue"],
+  ["dispatcher", "Dispatcher", "plan-hue"],
   ["planner", "Planner", "plan-hue"],
   ["worker", "Workers", "build-hue"],
   ["reviewer", "Reviewer", "review-hue"],

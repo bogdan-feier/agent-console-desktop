@@ -85,7 +85,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .notice:empty { display: none; }
 
 /* Three lanes, left to right: plan, build, review.
-   Plan: Jarvis on top, the planner below. Build: three workers stacked.
+   Plan: The dispatcher on top, the planner below. Build: three workers stacked.
    Review: the reviewer, full height. */
 .lanes {
   display: grid; gap: 12px 14px;
@@ -106,7 +106,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--hue);
   border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
-.agent[data-agent=jarvis] { grid-column: 1; grid-row: 2; }
+.agent[data-agent=dispatcher] { grid-column: 1; grid-row: 2; }
 .agent[data-agent=planner] { grid-column: 1; grid-row: 3 / span 2; }
 .agent[data-agent=worker-1] { grid-column: 2; grid-row: 2; }
 .agent[data-agent=worker-2] { grid-column: 2; grid-row: 3; }

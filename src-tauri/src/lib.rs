@@ -2,22 +2,27 @@
 //! in `crates/core`.
 //!
 //! The page calls the `#[tauri::command]` functions below with `invoke(...)`,
-//! and receives progress as `run-event` events. Nothing in here knows how
+//! and receives progress as `run-event` events. Each command checks that the
+//! action is allowed right now (with the `can_*` functions from the engine),
+//! then starts the work in the background and returns. Nothing in here knows how
 //! agents work; that is all in the core crate.
 
 use std::collections::HashMap;
 use std::env;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_console_core::claude::{locate, ClaudeRunner};
-use agent_console_core::config::{self, AuthMode, Role, Task};
+use agent_console_core::config::{self, AuthMode, Role, Task, PLANNER_ID};
 use agent_console_core::demo::DemoRunner;
-use agent_console_core::orchestrator::{can_chat, supervised};
+use agent_console_core::orchestrator::{
+    can_approve, can_chat, can_finish_round, can_message, can_send_back, supervised, Isolation,
+};
 use agent_console_core::run::EventSink;
 use agent_console_core::settings::{self, Preset, Settings, SharedSettings};
-use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run, RunState};
+use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -58,8 +63,12 @@ impl AppState {
         }
     }
 
+    fn runs(&self) -> std::sync::MutexGuard<'_, HashMap<String, ActiveRun>> {
+        self.runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn find(&self, run_id: &str) -> CommandResult<(Arc<Run>, Orchestrator)> {
-        let runs = self.runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runs = self.runs();
         let active = runs.get(run_id).ok_or("That run no longer exists. Start a new one.")?;
         Ok((active.run.clone(), active.orchestrator.clone()))
     }
@@ -87,6 +96,12 @@ struct AgentInfo {
 }
 
 #[derive(Serialize)]
+struct PresetInfo {
+    preset: Preset,
+    settings: Settings,
+}
+
+#[derive(Serialize)]
 struct AppInfo {
     agents: Vec<AgentInfo>,
     auth: AuthMode,
@@ -99,12 +114,6 @@ struct AppInfo {
     demo_default: bool,
 }
 
-#[derive(Serialize)]
-struct PresetInfo {
-    preset: Preset,
-    settings: Settings,
-}
-
 /// What the page receives for every event: which run it belongs to, and the event.
 #[derive(Clone, Serialize)]
 struct RunEvent<'a> {
@@ -112,13 +121,15 @@ struct RunEvent<'a> {
     event: &'a Event,
 }
 
-/// How a run begins.
+/// Where a message from the main message box goes.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum StartMode {
-    /// Send the first message to the planner and talk it through.
+enum SendMode {
+    /// To Jarvis, which answers it or passes it on.
+    Jarvis,
+    /// Straight to the planner, to talk it through.
     Brainstorm,
-    /// Ask the planner for a plan straight away.
+    /// Straight to the planner, to make a plan.
     Plan,
 }
 
@@ -162,35 +173,42 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
     folder.into_path().ok().map(|path| path.to_string_lossy().into_owned())
 }
 
+/// Start a new run on a project with its first message.
 #[tauri::command]
 async fn start_run(
     app: AppHandle,
     state: State<'_, AppState>,
     project_dir: String,
     message: String,
-    mode: StartMode,
+    mode: SendMode,
     demo: bool,
 ) -> CommandResult<String> {
-    let message = message.trim();
-    if message.is_empty() {
-        return Err("Describe what you want to build or discuss.".to_string());
-    }
     let project_dir = expand_home(project_dir.trim());
     if !demo && !project_dir.is_dir() {
         return Err(format!("Folder not found: {}", project_dir.display()));
     }
+    // Never lose work silently: a round whose changes were not applied or discarded
+    // keeps its run alive.
+    if state.runs().values().any(|active| active.run.has_open_round()) {
+        return Err("The current run has changes waiting. Apply or discard them first.".to_string());
+    }
 
-    let runner: Arc<dyn AgentRunner> =
-        if demo { Arc::new(DemoRunner::new(DEMO_STEP_DELAY)) } else { state.claude_runner().await? };
-    let orchestrator = Orchestrator::new(runner, state.settings.clone());
+    let (runner, isolation): (Arc<dyn AgentRunner>, Isolation) = if demo {
+        // Demo agents never touch files, so they need no worktrees.
+        (Arc::new(DemoRunner::new(DEMO_STEP_DELAY)), Isolation::SharedFolder)
+    } else {
+        (state.claude_runner().await?, Isolation::Worktrees)
+    };
+    let orchestrator = Orchestrator::new(runner, state.settings.clone(), isolation);
 
     // Every event of this run is forwarded to the window.
     let sink: EventSink = Arc::new(move |run_id: &str, event: &Event| {
         let _ = app.emit(RUN_EVENT, RunEvent { run_id, event });
     });
-    let run = Run::new(project_dir, message, sink);
+    let run = Run::new(project_dir, message.trim(), sink);
+    can_message(&run, &message)?;
 
-    let mut runs = state.runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut runs = state.runs();
     // One run at a time: stop whatever was still going.
     for previous in runs.values() {
         previous.run.stop();
@@ -198,15 +216,29 @@ async fn start_run(
     runs.insert(run.id.clone(), ActiveRun { run: run.clone(), orchestrator: orchestrator.clone() });
     drop(runs);
 
-    let run_id = run.id.clone();
-    let first_message = message.to_string();
-    match mode {
-        StartMode::Brainstorm => {
-            spawn_phase(run.clone(), async move { orchestrator.chat(&run, "planner", &first_message).await })
+    dispatch(run.clone(), orchestrator, message, mode);
+    Ok(run.id.clone())
+}
+
+/// Send a message from the main message box to an existing run.
+#[tauri::command]
+fn send(state: State<'_, AppState>, run_id: String, message: String, mode: SendMode) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    can_message(&run, &message)?;
+    dispatch(run, orchestrator, message, mode);
+    Ok(())
+}
+
+fn dispatch(run: Arc<Run>, orchestrator: Orchestrator, message: String, mode: SendMode) {
+    let message = message.trim().to_string();
+    let task_run = run.clone();
+    spawn_phase(run, async move {
+        match mode {
+            SendMode::Jarvis => orchestrator.ask(&task_run, &message).await,
+            SendMode::Brainstorm => orchestrator.chat(&task_run, PLANNER_ID, &message).await,
+            SendMode::Plan => orchestrator.plan(&task_run, Some(&message)).await,
         }
-        StartMode::Plan => spawn_phase(run.clone(), async move { orchestrator.plan(&run, None).await }),
-    }
-    Ok(run_id)
+    });
 }
 
 /// Everything that has happened in a run so far, for a page that just (re)loaded.
@@ -215,7 +247,7 @@ fn run_events(state: State<'_, AppState>, run_id: String) -> CommandResult<Vec<E
     Ok(state.find(&run_id)?.0.events())
 }
 
-/// Send the user's message to one agent.
+/// Send the user's message directly to one agent (from the box in its panel).
 #[tauri::command]
 fn send_message(
     state: State<'_, AppState>,
@@ -226,46 +258,70 @@ fn send_message(
     let (run, orchestrator) = state.find(&run_id)?;
     can_chat(&run, &agent, &message)?;
     let message = message.trim().to_string();
-    spawn_phase(run.clone(), async move { orchestrator.chat(&run, &agent, &message).await });
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.chat(&task_run, &agent, &message).await });
     Ok(())
 }
 
-/// Ask the planner for a plan, from the request or the conversation so far.
+/// Ask the planner for a plan from the conversation so far, with optional extra text.
 #[tauri::command]
 fn make_plan(state: State<'_, AppState>, run_id: String, guidance: Option<String>) -> CommandResult<()> {
     let (run, orchestrator) = state.find(&run_id)?;
     if !run.is_at_rest() {
         return Err("Wait until the agents have finished.".to_string());
     }
-    spawn_phase(run.clone(), async move { orchestrator.plan(&run, guidance.as_deref()).await });
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.plan(&task_run, guidance.as_deref()).await });
     Ok(())
 }
 
 #[tauri::command]
 fn approve_plan(state: State<'_, AppState>, run_id: String, tasks: Vec<Task>) -> CommandResult<()> {
     let (run, orchestrator) = state.find(&run_id)?;
-    if run.state() != RunState::AwaitingApproval || run.is_busy() {
-        return Err("There is no plan waiting for approval.".to_string());
-    }
+    can_approve(&run)?;
     let tasks: Vec<Task> = tasks.into_iter().filter(|task| !task.title.trim().is_empty()).collect();
     if tasks.is_empty() {
         return Err("The plan needs at least one task.".to_string());
     }
-    spawn_phase(run.clone(), async move { orchestrator.build_and_review(&run, tasks).await });
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.build(&task_run, tasks).await });
     Ok(())
 }
 
-/// Send a reviewer's findings back to worker `worker`.
+/// Give worker `worker` the reviewer's findings for its task.
 #[tauri::command]
 fn send_back(state: State<'_, AppState>, run_id: String, worker: usize) -> CommandResult<()> {
     let (run, orchestrator) = state.find(&run_id)?;
-    if !run.is_at_rest() {
-        return Err("Wait until the agents have finished.".to_string());
-    }
-    if run.review(worker).is_none() {
-        return Err("That worker has no review to act on.".to_string());
-    }
-    spawn_phase(run.clone(), async move { orchestrator.fix(&run, worker).await });
+    can_send_back(&run, worker)?;
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.send_back(&task_run, worker).await });
+    Ok(())
+}
+
+#[tauri::command]
+fn review_again(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    can_finish_round(&run)?;
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.review(&task_run).await });
+    Ok(())
+}
+
+#[tauri::command]
+fn apply_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    can_finish_round(&run)?;
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.apply(&task_run).await });
+    Ok(())
+}
+
+#[tauri::command]
+fn discard_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
+    let (run, orchestrator) = state.find(&run_id)?;
+    can_finish_round(&run)?;
+    let task_run = run.clone();
+    spawn_phase(run, async move { orchestrator.discard(&task_run).await });
     Ok(())
 }
 
@@ -278,7 +334,7 @@ fn stop_run(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
 /// Do one phase in the background so the command can return right away.
 fn spawn_phase<F>(run: Arc<Run>, work: F)
 where
-    F: std::future::Future<Output = Result<(), AgentError>> + Send + 'static,
+    F: Future<Output = Result<(), AgentError>> + Send + 'static,
 {
     tauri::async_runtime::spawn(supervised(run, work));
 }
@@ -312,11 +368,15 @@ pub fn run() {
             save_settings,
             pick_folder,
             start_run,
+            send,
             run_events,
             send_message,
             make_plan,
             approve_plan,
             send_back,
+            review_again,
+            apply_changes,
+            discard_changes,
             stop_run
         ])
         .run(tauri::generate_context!())
@@ -337,9 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn start_modes_come_from_the_page_in_snake_case() {
-        let mode: StartMode = serde_json::from_str("\"brainstorm\"").unwrap();
-        assert!(matches!(mode, StartMode::Brainstorm));
-        assert!(serde_json::from_str::<StartMode>("\"build\"").is_err());
+    fn send_modes_come_from_the_page_in_snake_case() {
+        let mode: SendMode = serde_json::from_str("\"brainstorm\"").unwrap();
+        assert!(matches!(mode, SendMode::Brainstorm));
+        assert!(matches!(serde_json::from_str::<SendMode>("\"jarvis\"").unwrap(), SendMode::Jarvis));
+        assert!(serde_json::from_str::<SendMode>("\"build\"").is_err());
     }
 }

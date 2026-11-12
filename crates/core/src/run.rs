@@ -1,4 +1,5 @@
-//! A `Run` is one job, from "Start planning" to the final reviews.
+//! A `Run` is one working session on one project: you can talk to the agents,
+//! plan, build, review, apply, and then start the next round, all in one run.
 //!
 //! Several agents work on a run at the same time, so its changing parts sit
 //! behind a `Mutex`: whoever wants to read or change them locks it first, and
@@ -6,7 +7,7 @@
 //! held for a few lines and never across an `.await`.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -14,12 +15,13 @@ use tokio::sync::oneshot;
 
 use crate::config::{Review, Task};
 use crate::event::{AgentStatus, Event, EventKind};
+use crate::worktrees::Workspace;
 
 /// The stages a run moves through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
-    /// Nothing running yet; the user can talk to the planner or make a plan.
+    /// Nothing running and no changes waiting: talk, brainstorm or plan.
     Ready,
     /// The user sent a message and an agent is replying.
     Chatting,
@@ -27,6 +29,7 @@ pub enum RunState {
     AwaitingApproval,
     Building,
     Reviewing,
+    /// The review is in: apply the changes, discard them, or send work back.
     Done,
     Failed,
     Stopped,
@@ -39,22 +42,38 @@ pub type EventSink = Arc<dyn Fn(&str, &Event) + Send + Sync>;
 pub struct Run {
     pub id: String,
     pub project_dir: PathBuf,
+    /// The first message of the run.
     pub request: String,
     sink: EventSink,
     inner: Mutex<Inner>,
+}
+
+/// One plan being built: its tasks, the workers' reports and the review. Opened
+/// when the plan is approved, closed by Apply or Discard.
+#[derive(Default)]
+pub(crate) struct Round {
+    /// The git worktrees, or `None` when the agents work directly in the project
+    /// folder (demo mode and tests).
+    pub(crate) workspace: Option<Arc<Workspace>>,
+    pub(crate) worker_reports: HashMap<usize, String>,
+    pub(crate) review: Option<Review>,
+    /// The commit of the review worktree at the last review, so a second review
+    /// only needs the changes made since.
+    pub(crate) last_reviewed: Option<String>,
 }
 
 /// The parts of a run that change while it is in progress.
 struct Inner {
     state: RunState,
     events: Vec<Event>,
+    /// The latest plan's tasks (the approved ones once a round is open).
     tasks: Vec<Task>,
     running_agents: BTreeSet<String>,
     /// Agent ID -> its latest session ID, so the agent can be resumed and
     /// remembers the conversation (for a fix, or when the user talks to it).
     sessions: HashMap<String, String>,
-    worker_reports: HashMap<usize, String>,
-    reviews: HashMap<usize, Review>,
+    round: Option<Round>,
+    rounds_started: usize,
     /// Present while a phase is running; sending on it stops that phase.
     stop_signal: Option<oneshot::Sender<()>>,
 }
@@ -72,8 +91,8 @@ impl Run {
                 tasks: Vec::new(),
                 running_agents: BTreeSet::new(),
                 sessions: HashMap::new(),
-                worker_reports: HashMap::new(),
-                reviews: HashMap::new(),
+                round: None,
+                rounds_started: 0,
                 stop_signal: None,
             }),
         })
@@ -122,7 +141,7 @@ impl Run {
         self.emit(Some(agent), EventKind::AgentStatus { status });
     }
 
-    // --- Plan, reports and reviews --------------------------------------------
+    // --- Plan and sessions ----------------------------------------------------------
 
     pub fn tasks(&self) -> Vec<Task> {
         self.lock().tasks.clone()
@@ -146,26 +165,102 @@ impl Run {
         self.lock().sessions.insert(agent.to_string(), session);
     }
 
+    // --- The open round ----------------------------------------------------------
+
+    /// True while a round's changes are waiting to be applied or discarded.
+    pub fn has_open_round(&self) -> bool {
+        self.lock().round.is_some()
+    }
+
+    /// Start a round; returns its number (1 for the first round of this run).
+    pub(crate) fn open_round(&self, workspace: Option<Arc<Workspace>>) -> usize {
+        let number = {
+            let mut inner = self.lock();
+            inner.rounds_started += 1;
+            inner.round = Some(Round { workspace, ..Round::default() });
+            inner.rounds_started
+        };
+        self.emit(None, EventKind::Round { open: true });
+        number
+    }
+
+    /// The number the next round will get.
+    pub(crate) fn next_round_number(&self) -> usize {
+        self.lock().rounds_started + 1
+    }
+
+    /// End the round. The workers' and reviewer's sessions end with it: they lived in
+    /// worktrees that are now gone, so they cannot be resumed.
+    pub(crate) fn close_round(&self) -> Option<Arc<Workspace>> {
+        let workspace = {
+            let mut inner = self.lock();
+            inner.sessions.retain(|agent, _| !agent.starts_with("worker-") && agent != "reviewer");
+            inner.round.take().and_then(|round| round.workspace)
+        };
+        self.emit(None, EventKind::Round { open: false });
+        workspace
+    }
+
+    pub(crate) fn workspace(&self) -> Option<Arc<Workspace>> {
+        self.lock().round.as_ref().and_then(|round| round.workspace.clone())
+    }
+
+    /// The folder an agent works in: its worktree during a round, else the project.
+    pub fn folder_for(&self, agent: &str) -> PathBuf {
+        let workspace = self.workspace();
+        match (workspace, crate::config::worker_number(agent)) {
+            (Some(workspace), Some(number)) => workspace.worker_dir(number),
+            (Some(workspace), None) if agent == crate::config::REVIEWER_ID => workspace.review_dir(),
+            _ => self.project_dir.clone(),
+        }
+    }
+
+    pub fn project(&self) -> &Path {
+        &self.project_dir
+    }
+
     pub fn worker_report(&self, number: usize) -> Option<String> {
-        self.lock().worker_reports.get(&number).cloned()
+        self.lock().round.as_ref().and_then(|round| round.worker_reports.get(&number).cloned())
     }
 
     pub(crate) fn record_worker(&self, number: usize, report: String) {
-        self.lock().worker_reports.insert(number, report);
+        if let Some(round) = self.lock().round.as_mut() {
+            round.worker_reports.insert(number, report);
+        }
     }
 
-    pub fn review(&self, number: usize) -> Option<Review> {
-        self.lock().reviews.get(&number).cloned()
+    /// Numbers of the workers that finished their task in this round.
+    pub(crate) fn finished_workers(&self) -> Vec<usize> {
+        let inner = self.lock();
+        let mut numbers: Vec<usize> = inner
+            .round
+            .as_ref()
+            .map(|round| round.worker_reports.keys().copied().collect())
+            .unwrap_or_default();
+        numbers.sort_unstable();
+        numbers
     }
 
-    pub(crate) fn record_review(&self, number: usize, review: Review) {
-        self.lock().reviews.insert(number, review);
+    pub fn review(&self) -> Option<Review> {
+        self.lock().round.as_ref().and_then(|round| round.review.clone())
+    }
+
+    pub(crate) fn record_review(&self, review: Review, reviewed_commit: Option<String>) {
+        if let Some(round) = self.lock().round.as_mut() {
+            round.review = Some(review);
+            if reviewed_commit.is_some() {
+                round.last_reviewed = reviewed_commit;
+            }
+        }
+    }
+
+    pub(crate) fn last_reviewed(&self) -> Option<String> {
+        self.lock().round.as_ref().and_then(|round| round.last_reviewed.clone())
     }
 
     // --- Stopping ---------------------------------------------------------------
 
-    /// True when nothing is running and the user may start something (chat, plan,
-    /// send back).
+    /// True when nothing is running and the user may start something.
     pub fn is_at_rest(&self) -> bool {
         let at_rest = matches!(
             self.state(),

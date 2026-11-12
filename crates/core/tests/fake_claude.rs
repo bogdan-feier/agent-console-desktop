@@ -18,7 +18,7 @@ use agent_console_core::claude::command::{NO_MCP_SERVERS, NO_SKILLS, SHARED_SYST
 use agent_console_core::claude::locate::ClaudeLocation;
 use agent_console_core::claude::ClaudeRunner;
 use agent_console_core::config::{self, AuthMode};
-use agent_console_core::orchestrator::supervised;
+use agent_console_core::orchestrator::{supervised, Isolation};
 use agent_console_core::runner::run_agent;
 use agent_console_core::settings::{self, Effort, Settings};
 use agent_console_core::{Orchestrator, RunState};
@@ -198,7 +198,8 @@ async fn a_failed_planner_fails_the_run() {
 
     supervised(
         run.clone(),
-        Orchestrator::new(runner, settings::shared(Settings::default())).plan(&run, None),
+        Orchestrator::new(runner, settings::shared(Settings::default()), Isolation::SharedFolder)
+            .plan(&run, None),
     )
     .await;
     assert_eq!(run.state(), RunState::Failed);
@@ -212,6 +213,7 @@ async fn stopping_kills_the_process_and_its_children() {
     let orchestrator = Orchestrator::new(
         Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
         settings::shared(Settings::default()),
+        Isolation::SharedFolder,
     );
 
     let job = {
@@ -269,6 +271,7 @@ async fn planning_after_a_brainstorm_resumes_it_and_asks_for_the_plan_shape() {
     let orchestrator = Orchestrator::new(
         Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
         settings::shared(Settings::default()),
+        Isolation::SharedFolder,
     );
 
     // The brainstorm: no schema, so the planner answers freely.
@@ -295,6 +298,7 @@ async fn a_failed_chat_reply_does_not_fail_the_run() {
     let orchestrator = Orchestrator::new(
         Arc::new(ClaudeRunner::new(fake_claude(), AuthMode::ClaudeLogin)),
         settings::shared(Settings::default()),
+        Isolation::SharedFolder,
     );
 
     supervised(run.clone(), orchestrator.chat(&run, "planner", "hello")).await;
@@ -310,7 +314,7 @@ async fn usage_saving_flags_reach_a_claude_that_knows_them() {
     location.known_flags = Some([NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT].map(String::from).into());
     let runner = ClaudeRunner::new(location, AuthMode::ClaudeLogin);
 
-    run_agent(&runner, &run, &config::reviewer(&Settings::default(), 1), "x", None).await.unwrap();
+    run_agent(&runner, &run, &config::reviewer(&Settings::default()), "x", None).await.unwrap();
 
     let args: HashSet<String> = lines(&project, "fake-args.txt").into_iter().collect();
     for expected in [NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT, "--max-turns"] {

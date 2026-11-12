@@ -1,12 +1,20 @@
 # Agent Console
 
-A macOS desktop app that runs a small team of Claude agents on one of your projects.
+A macOS desktop app that runs a small team of Claude agents on one project.
 
-| Agent | Model | What it does | What it may do |
+```text
+you -> Jarvis -> answers quick questions itself, or passes your message to the planner
+       planner -> talks ideas through with you, then makes a plan -> you approve
+       workers -> up to 3 at the same time, each in its own copy of the project
+       reviewer -> checks all their work together -> you apply it, or discard it
+```
+
+| Agent | Default model | What it does | What it may do |
 |---|---|---|---|
-| Planner | Opus | Reads the project and splits your request into up to two tasks | Read files only |
-| Worker 1, Worker 2 | Sonnet | Each implements one task, at the same time | Read and edit files, run tests and linters |
-| Reviewer 1, Reviewer 2 | Sonnet | Each checks one worker's result and gives a verdict | Read files, run tests, linters and `git diff` |
+| Jarvis | Haiku | The front desk: answers quick questions, routes everything else | Read files only |
+| Planner | Opus | Brainstorms with you, then splits the work into up to three tasks | Read files only |
+| Workers 1 to 3 | Sonnet | Each builds one task, in its own git worktree | Read and edit files, run tests and linters |
+| Reviewer | Sonnet | Checks all the workers' changes merged together | Read files, run tests, linters and `git diff` |
 
 Built with Rust and Tauri 2. The page is plain HTML, CSS and JavaScript shown in the
 system's own web view. Each agent is a separate `claude` session, so the target project's
@@ -48,37 +56,66 @@ To let Claude Code run the test and lint commands in this repo without asking ea
 mkdir -p .claude && cp docs/claude-settings.example.json .claude/settings.json
 ```
 
-## How a run goes
+## How a round goes
 
-1. **Brainstorm (optional).** Type what you want and press **Brainstorm**. The planner reads
-   the project and discusses it with you: options, trade-offs, questions. Keep talking in
-   the box at the bottom of the planner's panel (Cmd+Enter sends). Nothing is edited.
-   Press **Plan right away** instead to skip the discussion.
-2. **Make plan.** When you are ready, press **Make plan**. The planner turns the
-   conversation into up to two tasks. Anything typed in the box is passed along as extra
-   direction ("keep it in one file").
-3. **Adjust or approve.** Edit the tasks directly, or tell the planner what to change and
-   press Make plan again. Then approve. This is the one point where work starts.
-4. **Build.** The workers run in parallel, each on its own task and its own files.
-5. **Review.** Each reviewer checks one worker and answers "Approved" or "Needs changes".
-6. **Follow up.** Every agent that has worked has a message box. Ask a worker for a change,
-   ask a reviewer why it decided something, or press "Send back to Worker N" to hand it the
-   review. Each agent continues its own session, so it remembers what it did and said.
-   You can also make a new plan for a next round.
+The project must be a git repository. When you approve a plan, it must have no uncommitted
+changes (see "Why worktrees" below).
 
-"Stop" ends whatever is running and kills the `claude` processes it started.
+1. **Message the team.** Type in the box at the top and press **Send** (or Cmd+Enter).
+   Jarvis answers quick questions itself ("what does this function do?"). Ideas go to the
+   planner to talk through; clear requests go to the planner to plan. To skip Jarvis, press
+   **Brainstorm** or **Plan right away** instead.
+2. **Brainstorm (optional).** Keep talking to the planner in the box at the bottom of its
+   panel. Nothing is edited.
+3. **Make plan.** The planner turns the conversation into one to three tasks. Edit the tasks
+   directly, or tell the planner what to change and press Make plan again.
+4. **Approve.** This is where work starts. Each worker gets its own copy of the project (a
+   git worktree) and builds its task there. Your project folder is not touched.
+5. **Review.** When the workers finish, their work is merged together and the reviewer
+   checks all of it at once, running the tests on the combined result. Each problem it finds
+   names the task it belongs to.
+6. **Fix (optional).** "Send back to Worker N" gives that worker the problems in its task;
+   the reviewer then checks again, looking only at what changed. You can also message any
+   worker or the reviewer directly, then press **Review again**.
+7. **Apply or discard.** **Apply to project** puts the result into your project as staged
+   changes: look at them with `git diff --staged` and commit them yourself. **Discard**
+   throws the round away. Either way the worktrees are deleted, and you can start the next
+   round in the same run: Jarvis and the planner remember the conversation.
+
+**Stop** ends whatever is running and kills the `claude` processes it started. **New run**
+starts over with fresh agents (apply or discard the open round first).
+
+## Why worktrees
+
+Three workers editing one folder at the same time can overwrite each other. Instead, each
+worker gets its own git worktree: a separate folder attached to your repository, on its
+own branch (`agent-console/<run>-round<N>/worker-<N>`). The worktrees live in the system's
+temporary folder, not in your project.
+
+- **Clean start.** Workers start from your last commit, which is why uncommitted changes
+  must be committed or stashed before you approve a plan.
+- **Clashes.** The planner gives each task different files. If two workers still change
+  the same file, the merge before the review fails, and the reviewer's panel says which
+  file. The app also warns when a worker changes a file outside its task.
+- **Apply needs a clean, unchanged project.** If you committed something in the meantime,
+  Apply tells you the branch to merge yourself (`git merge --squash <branch>`).
+- **Slower first test run.** Each worktree is a fresh checkout without ignored folders
+  such as `.venv`, `node_modules` or `target`, so the first test run in it sets those up again.
+- **Quitting the app** with a round still open leaves its branches in your repository, so
+  nothing is lost. To clean them up later:
+  `git worktree prune && git branch --list 'agent-console/*' | xargs git branch -D`.
 
 ## Settings
 
 **Start from** fills everything in with one of three presets:
 
-| Preset | Planner | Workers | Reviewers | Cap per session |
-|---|---|---|---|---|
-| Lean | Sonnet, medium effort | Sonnet, low | Haiku, default | 3 dollars |
-| Balanced (the default) | Opus, medium | Sonnet, medium | Sonnet, low | 5 dollars |
-| Thorough | Opus, high | Sonnet, high | Opus, medium | 10 dollars |
+| Preset | Jarvis | Planner | Workers | Reviewer | Cap per session |
+|---|---|---|---|---|---|
+| Lean | Haiku | Sonnet, medium effort | Sonnet, low | Sonnet, low | 3 dollars |
+| Balanced (the default) | Haiku | Opus, medium | Sonnet, medium | Sonnet, medium | 5 dollars |
+| Thorough | Haiku | Opus, high | Sonnet, high | Opus, medium | 10 dollars |
 
-You can then change any of them. For the planner, the workers and the reviewers you set:
+You can then change any of them. For each role you set:
 
 - **Model:** Opus, Sonnet, Haiku, or any model ID you type under "Other".
 - **Effort:** how hard the model thinks before answering (Low to Max). "Default" leaves it to
@@ -93,8 +130,8 @@ defaults are the constants at the top of `crates/core/src/config.rs`.
 ## Signing in
 
 By default the agents use the account you are logged in to Claude Code with. Usage counts
-against that plan's limits, the same as using Claude Code in a terminal, and one run here
-is five sessions. An `ANTHROPIC_API_KEY` in your environment is ignored on purpose so you
+against that plan's limits, the same as using Claude Code in a terminal, and one round can
+be six sessions or more. An `ANTHROPIC_API_KEY` in your environment is ignored on purpose so you
 are never billed on the API by accident.
 
 To pay per use with an API key instead, set `AUTH` to `AuthMode::ApiKey` in
@@ -115,13 +152,17 @@ that.
   which would otherwise be sent on every turn of every agent. The agents only need file and
   shell tools. (These options are only passed if your version of Claude Code lists them in
   `claude --help`, so an older version still works, just without this saving.)
+- **Jarvis first.** Quick questions are answered by Haiku, and the Opus planner only runs
+  when it is needed.
 - **Shared prompt cache.** The parts of the system prompt that change between sessions are
-  moved out of it, and the second of two parallel agents starts 5 seconds after the first.
-  It can then read the first one's cached prompt, which costs far less than sending it fresh.
+  moved out of it, and parallel workers start 5 seconds apart. Each can then read the
+  previous one's cached prompt, which costs far less than sending it fresh.
 - **One task when one is enough.** The planner is told to split work only when the parts are
-  big and independent. Each extra task means another worker and another reviewer.
-- **Reviewers get the diff.** The reviewer's prompt includes what the worker changed (from
-  git), so it does not spend turns finding and reading files. It runs only the task's tests.
+  big and independent. Each extra task means another worker.
+- **One reviewer for everything.** One session checks all the tasks together and runs the
+  tests once, instead of one reviewer per worker. Its prompt includes the merged diff, so
+  it does not spend turns finding and reading files. A second review continues the same
+  session and only gets what changed since the first.
 - **Economical instructions.** Every agent is told to search before reading, read only the
   parts of files it needs, and not re-read what it has already seen.
 - **Limits.** Each session has a turn limit (`*_MAX_TURNS` in `config.rs`) and the spending
@@ -137,10 +178,12 @@ that.
 - **Try the Lean preset** for routine work, and Thorough only when quality matters most.
 - **Keep brainstorms short.** Each message resends the conversation so far (mostly from
   cache, but it grows). When you know what you want, press Make plan.
-- **Plan right away** for small, clear changes: it skips the brainstorm entirely.
+- **Plan right away** for small, clear changes: it skips Jarvis and the brainstorm.
 - **Keep the target project's `CLAUDE.md` short.** Every agent reads it at the start.
-- **Ask for one thing per run.** Two unrelated requests in one run cost more than two
-  small runs, because every agent carries both in its context.
+- **Ask for one thing per round.** Two unrelated requests in one round cost more than two
+  small rounds, because every agent carries both in its context.
+- **Start a new run now and then.** Jarvis and the planner keep their conversation across
+  rounds, which helps, but it also keeps growing. **New run** starts them fresh.
 
 ## Changing things
 
@@ -150,6 +193,7 @@ that.
 | What the Settings window can change, the presets, and how it is saved | `crates/core/src/settings.rs` |
 | What goes into the reviewer's prompt about the changes | `crates/core/src/changes.rs` |
 | The order agents run in | `crates/core/src/orchestrator.rs` |
+| How worktrees are created, merged, applied and removed | `crates/core/src/worktrees.rs` |
 | How `claude` is started, or how its output is read | `crates/core/src/claude/` |
 | What the page looks like | `ui/styles.css`, `ui/index.html` |
 | What the page does | `ui/app.js` |
@@ -166,19 +210,16 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 
 ## Things to know before pointing it at real code
 
-- **Workers share one folder.** They run at the same time in the same working tree. The
-  planner is told to give each task different files, and each worker is told to stay in
-  its list, but nothing enforces that. Check the file lists before you approve.
-- **Commit first.** Start from a clean `git status` so you can see, and undo, exactly
-  what the agents changed.
+- **Check the file lists before you approve.** Tasks that share a file will clash when
+  their work is merged.
 - **Shell commands are limited.** Agents may run the commands in `CHECK_COMMANDS`
   (`config.rs`) plus whatever the project's `.claude/settings.json` allows. Everything
   else is refused and shows up in the panel as "Refused or failed".
 - **Each session has a cap.** A session stops at the spending cap in Settings (5 dollars of
   API-equivalent usage by default). Long conversations with one agent count toward the same
   session, so a long brainstorm can reach it.
-- **Runs live in memory.** Quitting the app forgets them. The edits the agents made stay
-  on disk.
+- **Runs live in memory.** Quitting the app forgets them (an open round's branches stay in
+  your repository; see "Why worktrees").
 - **No official SDK underneath.** There is no Agent SDK for Rust, so this app reads the
   `claude` CLI's JSON output itself (`crates/core/src/claude/protocol.rs`). If a Claude
   Code update changes that output, this is the file to fix.
@@ -187,6 +228,9 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 
 | What you see | What to do |
 |---|---|
+| "The project has uncommitted changes" when approving | Commit or stash them, then approve again. The plan is still there. |
+| "Worker N's changes clash with another worker's" | Two tasks changed the same file. Message one worker to undo its change there and press Review again, or discard and plan again. |
+| "Your project has new commits since the workers started" | Run the `git merge --squash` command it shows, then Discard to clean up. |
 | An agent fails right after you change its effort | Some models do not support every effort level. Set it back to Default. |
 | "Stopped at this agent's turn limit" | Send the agent a message such as "continue" to let it finish, or raise its limit in `config.rs`. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |

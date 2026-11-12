@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn saving_flags_are_passed_only_when_claude_lists_them() {
-        let spec = config::reviewer(&Settings::default(), 1);
+        let spec = config::reviewer(&Settings::default());
 
         let unknown = build_args(&spec, None, None);
         assert!(!has(&unknown, NO_SKILLS) && !has(&unknown, NO_MCP_SERVERS));

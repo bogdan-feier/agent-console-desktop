@@ -33,6 +33,16 @@ pub enum EventKind {
     AgentModel {
         model: String,
     },
+    /// Something the app itself wants to tell the user, shown in that agent's panel
+    /// (for example, a worker that changed a file outside its task).
+    Notice {
+        text: String,
+    },
+    /// A round of work (worktrees with changes) was opened or closed. While one is
+    /// open, the page offers Apply, Discard and Review again.
+    Round {
+        open: bool,
+    },
     /// A message the user sent to this agent.
     UserMessage {
         text: String,

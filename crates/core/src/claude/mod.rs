@@ -8,6 +8,7 @@ pub mod command;
 pub mod locate;
 pub mod protocol;
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -66,13 +67,14 @@ impl AgentRunner for ClaudeRunner {
         spec: &AgentSpec,
         prompt: &str,
         resume: Option<&str>,
+        folder: &Path,
     ) -> Result<AgentOutput, AgentError> {
         let agent = spec.id.as_str();
 
         let mut command = Command::new(&self.location.program);
         command
             .args(command::build_args(spec, resume, self.location.known_flags.as_ref()))
-            .current_dir(&run.project_dir)
+            .current_dir(folder)
             .env("PATH", &self.location.path_variable)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

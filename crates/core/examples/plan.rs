@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use agent_console_core::claude::{locate, ClaudeRunner};
-use agent_console_core::orchestrator::supervised;
+use agent_console_core::orchestrator::{supervised, Isolation};
 use agent_console_core::run::EventSink;
 use agent_console_core::settings::{self, Settings};
 use agent_console_core::{config, Event, Orchestrator, Run};
@@ -35,6 +35,8 @@ async fn main() {
         Arc::new(|_run_id: &str, event: &Event| println!("{}", serde_json::to_string(event).unwrap()));
     let run = Run::new(project_dir, request, print);
     let runner = Arc::new(ClaudeRunner::new(location, config::AUTH));
-    let orchestrator = Orchestrator::new(runner, settings::shared(Settings::default()));
+    // Planning only reads the project, so no worktrees are needed here.
+    let orchestrator =
+        Orchestrator::new(runner, settings::shared(Settings::default()), Isolation::SharedFolder);
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
 }

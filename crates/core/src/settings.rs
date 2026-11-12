@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_MODEL};
+use crate::config::{JARVIS_MODEL, MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_MODEL};
 
 /// Highest spending cap the Settings window accepts, in US dollars per agent session.
 pub const MAX_BUDGET_LIMIT_USD: f64 = 1000.0;
@@ -59,7 +59,7 @@ impl RoleSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Preset {
-    /// Least usage: Sonnet plans, Haiku reviews, low effort for the workers.
+    /// Least usage: Sonnet plans, low effort for the workers.
     Lean,
     /// The default: Opus plans, Sonnet builds and reviews, moderate effort.
     Balanced,
@@ -76,6 +76,7 @@ impl Preset {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub jarvis: RoleSettings,
     pub planner: RoleSettings,
     pub worker: RoleSettings,
     pub reviewer: RoleSettings,
@@ -96,18 +97,22 @@ impl Default for Settings {
 impl Settings {
     pub fn preset(preset: Preset) -> Settings {
         use Effort::{High, Low, Medium};
+        // Jarvis stays on Haiku in every preset: routing and quick answers do not need
+        // more, and it runs on every message. Not every Haiku version takes an effort
+        // level, so it is left unset.
+        let jarvis = RoleSettings::new(JARVIS_MODEL, None);
         let (planner, worker, reviewer, budget) = match preset {
             Preset::Lean => (
                 RoleSettings::new("sonnet", Some(Medium)),
                 RoleSettings::new("sonnet", Some(Low)),
-                // Not every Haiku version takes an effort level, so leave it unset.
-                RoleSettings::new("haiku", None),
+                // One reviewer checks every task together, so it stays on Sonnet.
+                RoleSettings::new("sonnet", Some(Low)),
                 Some(3.0),
             ),
             Preset::Balanced => (
                 RoleSettings::new(PLANNER_MODEL, Some(Medium)),
                 RoleSettings::new(WORKER_MODEL, Some(Medium)),
-                RoleSettings::new(REVIEWER_MODEL, Some(Low)),
+                RoleSettings::new(REVIEWER_MODEL, Some(Medium)),
                 MAX_BUDGET_USD_PER_AGENT,
             ),
             Preset::Thorough => (
@@ -117,7 +122,7 @@ impl Settings {
                 Some(10.0),
             ),
         };
-        Settings { planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
+        Settings { jarvis, planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
     }
 }
 
@@ -137,9 +142,12 @@ pub fn current(shared: &SharedSettings) -> Settings {
 impl Settings {
     /// Check the settings and tidy them (trim model names). Errors are shown to the user.
     pub fn validated(mut self) -> Result<Settings, String> {
-        for (label, role) in
-            [("Planner", &mut self.planner), ("Workers", &mut self.worker), ("Reviewers", &mut self.reviewer)]
-        {
+        for (label, role) in [
+            ("Jarvis", &mut self.jarvis),
+            ("Planner", &mut self.planner),
+            ("Workers", &mut self.worker),
+            ("Reviewer", &mut self.reviewer),
+        ] {
             role.model = role.model.trim().to_string();
             check_model(&role.model).map_err(|problem| format!("{label}: {problem}"))?;
         }
@@ -215,7 +223,8 @@ mod tests {
         assert_eq!(settings, Settings::preset(Preset::Balanced));
         assert_eq!(settings.planner.model, "opus");
         assert_eq!(settings.worker.model, "sonnet");
-        assert_eq!(settings.reviewer.effort, Some(Effort::Low));
+        assert_eq!(settings.jarvis.model, "haiku");
+        assert_eq!(settings.reviewer.effort, Some(Effort::Medium));
         assert!(!settings.use_mcp_servers);
     }
 

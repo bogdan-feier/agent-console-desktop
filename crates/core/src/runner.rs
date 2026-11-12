@@ -5,6 +5,7 @@
 //! program; `demo::DemoRunner` plays a script. The orchestrator only knows the
 //! trait, so it works with either.
 
+use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -37,19 +38,23 @@ pub trait AgentRunner: Send + Sync {
         Duration::ZERO
     }
 
-    /// Run one session to completion, emitting text and tool events on `run`.
+    /// Run one session to completion in the folder `folder`, emitting text and tool
+    /// events on `run`.
     ///
-    /// `resume` continues an earlier session, so the agent remembers its work.
+    /// `resume` continues an earlier session, so the agent remembers its work. Claude
+    /// Code finds sessions by folder, so a resumed session must run in the same one.
     async fn run_session(
         &self,
         run: &Run,
         spec: &AgentSpec,
         prompt: &str,
         resume: Option<&str>,
+        folder: &Path,
     ) -> Result<AgentOutput, AgentError>;
 }
 
-/// Run one agent and report its status (running, then done or error).
+/// Run one agent in its folder (see `Run::folder_for`) and report its status
+/// (running, then done or error).
 pub async fn run_agent(
     runner: &dyn AgentRunner,
     run: &Run,
@@ -57,8 +62,9 @@ pub async fn run_agent(
     prompt: &str,
     resume: Option<&str>,
 ) -> Result<AgentOutput, AgentError> {
+    let folder = run.folder_for(&spec.id);
     let mut status = StatusGuard::start(run, &spec.id);
-    let result = runner.run_session(run, spec, prompt, resume).await;
+    let result = runner.run_session(run, spec, prompt, resume, &folder).await;
     match &result {
         Ok(output) => {
             // Remember the session so the agent can be resumed later.

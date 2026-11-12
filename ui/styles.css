@@ -85,11 +85,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .notice:empty { display: none; }
 
 /* Three lanes, left to right: plan, build, review.
-   Each worker shares a row with the reviewer that checks it. */
+   Plan: Jarvis on top, the planner below. Build: three workers stacked.
+   Review: the reviewer, full height. */
 .lanes {
   display: grid; gap: 12px 14px;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.05fr);
+  grid-template-rows: auto minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr);
   flex: 1; min-height: 0;
 }
 .lane-title {
@@ -105,7 +106,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--hue);
   border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
-.agent[data-agent=planner] { grid-row: 2 / span 2; }
+.agent[data-agent=jarvis] { grid-column: 1; grid-row: 2; }
+.agent[data-agent=planner] { grid-column: 1; grid-row: 3 / span 2; }
+.agent[data-agent=worker-1] { grid-column: 2; grid-row: 2; }
+.agent[data-agent=worker-2] { grid-column: 2; grid-row: 3; }
+.agent[data-agent=worker-3] { grid-column: 2; grid-row: 4; }
+.agent[data-agent=reviewer] { grid-column: 3; grid-row: 2 / span 3; }
 .agent header {
   display: flex; align-items: center; gap: 8px; padding: 9px 12px;
   border-bottom: 1px solid var(--line);
@@ -152,7 +158,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .brief { grid-template-columns: 1fr; }
   .page { height: auto; }
   .lanes { grid-template-columns: 1fr; grid-template-rows: none; }
-  .agent[data-agent=planner] { grid-row: auto; }
+  .agent[data-agent] { grid-row: auto; grid-column: auto; }
   .agent { max-height: 60vh; }
 }
 
@@ -209,3 +215,18 @@ select {
 .mcp-switch { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); margin: 0; }
 .mcp-switch input { margin-top: 3px; }
 .mcp-switch .hint { display: block; }
+
+/* Something the app itself reports, such as a worker that changed a file outside its task. */
+.app-note { font-size: 13.5px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; }
+
+/* The open round: Review again, Apply and Discard, under the reviewer's log. */
+.round-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  border-top: 1px solid var(--line); padding: 8px 10px; background: var(--surface);
+}
+.round-actions[hidden] { display: none; }
+.round-actions .discard { margin-left: auto; }
+.round-actions button { padding: 6px 11px; font-size: 14px; }
+.round-actions .apply { background: var(--good); border-color: var(--good); color: var(--surface); font-weight: 600; }
+.verdict .task-group { display: grid; gap: 4px; }
+.verdict .task-group button { justify-self: start; margin-top: 2px; }

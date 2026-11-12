@@ -1,4 +1,7 @@
-//! The whole plan -> build -> review flow, using the scripted demo agents.
+//! The whole flow with the scripted demo agents: Jarvis, planning, a round with
+//! three workers and one review, sending work back, applying and discarding.
+//! (Demo agents touch no files, so these use the shared-folder mode; the real
+//! worktrees are tested in `worktree_round.rs`.)
 
 mod common;
 
@@ -7,81 +10,183 @@ use std::time::Duration;
 
 use agent_console_core::config::{Task, Verdict};
 use agent_console_core::demo::DemoRunner;
-use agent_console_core::orchestrator::{can_chat, supervised};
+use agent_console_core::orchestrator::{
+    can_approve, can_chat, can_finish_round, can_send_back, supervised, Isolation,
+};
 use agent_console_core::settings::{self, Settings};
 use agent_console_core::{Orchestrator, RunState};
 use common::{new_run, Collected};
 
 fn instant_demo() -> Orchestrator {
-    Orchestrator::new(Arc::new(DemoRunner::new(Duration::ZERO)), settings::shared(Settings::default()))
+    Orchestrator::new(
+        Arc::new(DemoRunner::new(Duration::ZERO)),
+        settings::shared(Settings::default()),
+        Isolation::SharedFolder,
+    )
+}
+
+/// A run that has been planned, built and reviewed once.
+async fn reviewed_run(collected: &Collected) -> (Arc<agent_console_core::Run>, Orchestrator) {
+    let run = new_run(".", collected);
+    let orchestrator = instant_demo();
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    (run, orchestrator)
 }
 
 #[tokio::test]
-async fn planning_ends_waiting_for_approval() {
+async fn jarvis_answers_quick_questions_itself() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
 
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), instant_demo().ask(&run, "What does stats.py do?")).await;
+
+    assert_eq!(run.state(), RunState::Ready);
+    assert_eq!(collected.statuses("jarvis"), ["running", "done"]);
+    assert!(collected.statuses("planner").is_empty(), "the planner was not needed");
+    let answer = collected.of_type("text").last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(answer.contains("count_words"), "{answer}");
+}
+
+#[tokio::test]
+async fn jarvis_passes_ideas_to_the_planner_to_talk_through() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+
+    supervised(run.clone(), instant_demo().ask(&run, "Thoughts on better text statistics")).await;
+
+    assert_eq!(run.state(), RunState::Ready);
+    assert_eq!(collected.statuses("planner"), ["running", "done"]);
+    assert_eq!(run.session("planner").as_deref(), Some("demo-planner"));
+    // The user's message appears in both panels: Jarvis's, and the planner's.
+    let to: Vec<_> = collected.of_type("user_message").iter().map(|e| e["agent"].clone()).collect();
+    assert_eq!(to, ["jarvis", "planner"]);
+}
+
+#[tokio::test]
+async fn jarvis_passes_clear_requests_on_to_be_planned() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+
+    supervised(run.clone(), instant_demo().ask(&run, "Add three text helpers")).await;
 
     assert_eq!(run.state(), RunState::AwaitingApproval);
-    assert_eq!(run.tasks().len(), 2);
+    assert_eq!(run.tasks().len(), 3);
     assert_eq!(collected.of_type("plan").len(), 1);
-    assert!(!run.is_busy());
 }
 
 #[tokio::test]
-async fn build_and_review_runs_every_agent() {
+async fn a_round_runs_three_workers_and_one_review() {
     let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
+    let (run, _) = reviewed_run(&collected).await;
 
     assert_eq!(run.state(), RunState::Done);
-    for agent in ["planner", "worker-1", "worker-2", "reviewer-1", "reviewer-2"] {
+    assert!(run.has_open_round());
+    for agent in ["planner", "worker-1", "worker-2", "worker-3", "reviewer"] {
         assert_eq!(collected.statuses(agent), ["running", "done"], "{agent}");
     }
-    assert_eq!(run.review(1).unwrap().verdict, Verdict::Approve);
-    assert_eq!(run.review(2).unwrap().verdict, Verdict::NeedsChanges);
+    let review = run.review().unwrap();
+    assert_eq!(review.verdict, Verdict::NeedsChanges);
+    assert_eq!(review.findings_for(2).len(), 1);
+    assert_eq!(collected.of_type("round")[0]["open"], true);
 }
 
 #[tokio::test]
-async fn events_are_numbered_in_order() {
+async fn sending_work_back_resumes_that_worker_and_reviews_again() {
     let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
+    let (run, orchestrator) = reviewed_run(&collected).await;
+    assert!(can_send_back(&run, 2).is_ok());
+    assert!(can_send_back(&run, 1).is_err(), "nothing for worker 1 to fix");
 
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
-
-    let seen: Vec<u64> = collected.all().iter().map(|event| event["seq"].as_u64().unwrap()).collect();
-    let expected: Vec<u64> = (0..seen.len() as u64).collect();
-    assert_eq!(seen, expected);
-    assert_eq!(run.events().len(), seen.len());
-}
-
-#[tokio::test]
-async fn sending_a_review_back_resumes_the_same_worker() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
-    supervised(run.clone(), orchestrator.fix(&run, 2)).await;
+    supervised(run.clone(), orchestrator.send_back(&run, 2)).await;
 
     assert_eq!(run.state(), RunState::Done);
-    assert_eq!(run.review(2).unwrap().verdict, Verdict::Approve);
+    assert_eq!(run.review().unwrap().verdict, Verdict::Approve);
     assert!(run.worker_report(2).unwrap().contains("Fixed"));
     assert_eq!(collected.statuses("worker-2"), ["running", "done", "running", "done"]);
-    // Worker 1 was not touched by the fix.
-    assert_eq!(collected.statuses("worker-1"), ["running", "done"]);
+    assert_eq!(collected.statuses("worker-1"), ["running", "done"], "worker 1 was not touched");
+    assert_eq!(collected.statuses("reviewer"), ["running", "done", "running", "done"]);
 }
 
 #[tokio::test]
-async fn a_single_task_uses_one_worker_and_one_reviewer() {
+async fn applying_closes_the_round_and_ends_the_workers_sessions() {
+    let collected = Collected::default();
+    let (run, orchestrator) = reviewed_run(&collected).await;
+    assert!(can_approve(&run).is_err(), "a new plan waits until this round is finished");
+    assert!(can_chat(&run, "worker-1", "hi").is_ok());
+
+    supervised(run.clone(), orchestrator.apply(&run)).await;
+
+    assert_eq!(run.state(), RunState::Ready);
+    assert!(!run.has_open_round());
+    assert!(can_chat(&run, "worker-1", "hi").is_err());
+    assert!(can_chat(&run, "planner", "hi").is_ok(), "the planner remembers across rounds");
+    assert!(can_finish_round(&run).is_err());
+    assert_eq!(collected.of_type("round").last().unwrap()["open"], false);
+}
+
+#[tokio::test]
+async fn discarding_closes_the_round() {
+    let collected = Collected::default();
+    let (run, orchestrator) = reviewed_run(&collected).await;
+
+    supervised(run.clone(), orchestrator.discard(&run)).await;
+
+    assert_eq!(run.state(), RunState::Ready);
+    assert!(!run.has_open_round());
+    let notice = collected.of_type("notice").last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(notice.contains("Discarded"));
+}
+
+#[tokio::test]
+async fn who_can_be_talked_to_and_when() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+    let orchestrator = instant_demo();
+
+    assert!(can_chat(&run, "planner", "hello").is_ok());
+    assert!(can_chat(&run, "planner", "   ").is_err());
+    assert!(can_chat(&run, "jarvis", "hello").is_err(), "Jarvis is reached through the main box");
+    assert!(can_chat(&run, "worker-1", "hello").is_err(), "worker has not worked yet");
+    assert!(can_chat(&run, "reviewer", "hello").is_err());
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    assert!(can_chat(&run, "worker-3", "hello").is_ok());
+    assert!(can_chat(&run, "reviewer", "why?").is_ok());
+    let too_long = "x".repeat(agent_console_core::orchestrator::MAX_MESSAGE_CHARS + 1);
+    assert!(can_chat(&run, "planner", &too_long).is_err());
+}
+
+#[tokio::test]
+async fn talking_to_a_worker_updates_its_report_for_the_next_review() {
+    let collected = Collected::default();
+    let (run, orchestrator) = reviewed_run(&collected).await;
+
+    supervised(run.clone(), orchestrator.chat(&run, "worker-1", "Rename the function to longest()")).await;
+    assert_eq!(run.state(), RunState::Done);
+    assert!(run.worker_report(1).unwrap().contains("Rename the function"));
+
+    supervised(run.clone(), orchestrator.review(&run)).await;
+    assert_eq!(run.review().unwrap().verdict, Verdict::Approve);
+}
+
+#[tokio::test]
+async fn chatting_while_a_plan_waits_keeps_it_waiting() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+    let orchestrator = instant_demo();
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.chat(&run, "planner", "Why three tasks?")).await;
+
+    assert_eq!(run.state(), RunState::AwaitingApproval);
+    let states: Vec<_> = collected.of_type("run_state").iter().map(|e| e["state"].clone()).collect();
+    assert_eq!(states, ["planning", "awaiting_approval", "chatting", "awaiting_approval"]);
+}
+
+#[tokio::test]
+async fn a_single_task_uses_one_worker() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
     let task = Task {
@@ -90,12 +195,43 @@ async fn a_single_task_uses_one_worker_and_one_reviewer() {
         files: vec!["a.py".to_string()],
     };
 
-    supervised(run.clone(), instant_demo().build_and_review(&run, vec![task])).await;
+    supervised(run.clone(), instant_demo().build(&run, vec![task])).await;
 
     assert_eq!(run.state(), RunState::Done);
     assert_eq!(collected.statuses("worker-1"), ["running", "done"]);
     assert!(collected.statuses("worker-2").is_empty());
-    assert!(collected.statuses("reviewer-2").is_empty());
+    assert_eq!(collected.statuses("reviewer"), ["running", "done"]);
+}
+
+#[tokio::test]
+async fn events_are_numbered_in_order() {
+    let collected = Collected::default();
+    let (run, _) = reviewed_run(&collected).await;
+
+    let seen: Vec<u64> = collected.all().iter().map(|event| event["seq"].as_u64().unwrap()).collect();
+    let expected: Vec<u64> = (0..seen.len() as u64).collect();
+    assert_eq!(seen, expected);
+    assert_eq!(run.events().len(), seen.len());
+}
+
+#[tokio::test]
+async fn changed_settings_apply_to_the_next_agent() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+    let shared = settings::shared(Settings::default());
+    let orchestrator =
+        Orchestrator::new(Arc::new(DemoRunner::new(Duration::ZERO)), shared.clone(), Isolation::SharedFolder);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    shared.write().unwrap().worker.model = "haiku".to_string();
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+
+    let model_of = |agent: &str| {
+        collected.of_type("agent_model").into_iter().find(|e| e["agent"] == agent).unwrap()["model"].clone()
+    };
+    assert_eq!(model_of("planner"), "demo-opus");
+    assert_eq!(model_of("worker-1"), "demo-haiku");
+    assert_eq!(model_of("reviewer"), "demo-sonnet");
 }
 
 #[tokio::test]
@@ -106,6 +242,7 @@ async fn stopping_marks_running_agents_as_stopped() {
     let orchestrator = Orchestrator::new(
         Arc::new(DemoRunner::new(Duration::from_secs(30))),
         settings::shared(Settings::default()),
+        Isolation::SharedFolder,
     );
 
     let job = {
@@ -121,98 +258,6 @@ async fn stopping_marks_running_agents_as_stopped() {
     assert_eq!(run.state(), RunState::Stopped);
     assert_eq!(collected.statuses("planner"), ["running", "stopped"]);
     assert!(!run.stop(), "nothing left to stop");
-}
-
-#[tokio::test]
-async fn brainstorming_then_planning_continues_the_planner_session() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-    assert_eq!(run.state(), RunState::Ready);
-
-    supervised(run.clone(), orchestrator.chat(&run, "planner", "How should we split this?")).await;
-    // A chat returns the run to the state it was in.
-    assert_eq!(run.state(), RunState::Ready);
-    assert_eq!(collected.of_type("user_message")[0]["text"], "How should we split this?");
-    assert!(collected
-        .of_type("text")
-        .iter()
-        .any(|e| e["text"].as_str().unwrap().contains("Which do you prefer")));
-    assert_eq!(run.session("planner").as_deref(), Some("demo-planner"));
-
-    supervised(run.clone(), orchestrator.plan(&run, Some("Keep each helper in its own file"))).await;
-    assert_eq!(run.state(), RunState::AwaitingApproval);
-    // The extra direction shows up in the planner's panel as a user message.
-    assert_eq!(collected.of_type("user_message").len(), 2);
-}
-
-#[tokio::test]
-async fn chatting_while_a_plan_waits_keeps_it_waiting() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.chat(&run, "planner", "Why two tasks?")).await;
-
-    assert_eq!(run.state(), RunState::AwaitingApproval);
-    let states: Vec<_> = collected.of_type("run_state").iter().map(|e| e["state"].clone()).collect();
-    assert_eq!(states, ["planning", "awaiting_approval", "chatting", "awaiting_approval"]);
-}
-
-#[tokio::test]
-async fn talking_to_a_worker_after_the_build_updates_its_report() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
-    supervised(run.clone(), orchestrator.chat(&run, "worker-1", "Rename the function to longest()")).await;
-
-    assert_eq!(run.state(), RunState::Done);
-    assert!(run.worker_report(1).unwrap().contains("Rename the function"));
-    assert_eq!(collected.statuses("worker-1"), ["running", "done", "running", "done"]);
-}
-
-#[tokio::test]
-async fn who_can_be_talked_to_and_when() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
-
-    assert!(can_chat(&run, "planner", "hello").is_ok());
-    assert!(can_chat(&run, "planner", "   ").is_err());
-    assert!(can_chat(&run, "worker-1", "hello").is_err(), "worker has not worked yet");
-    assert!(can_chat(&run, "boss", "hello").is_err());
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
-    assert!(can_chat(&run, "worker-1", "hello").is_ok());
-    assert!(can_chat(&run, "reviewer-2", "why?").is_ok());
-    let too_long = "x".repeat(agent_console_core::orchestrator::MAX_MESSAGE_CHARS + 1);
-    assert!(can_chat(&run, "planner", &too_long).is_err());
-}
-
-#[tokio::test]
-async fn changed_settings_apply_to_the_next_agent() {
-    let collected = Collected::default();
-    let run = new_run(".", &collected);
-    let shared = settings::shared(Settings::default());
-    let orchestrator = Orchestrator::new(Arc::new(DemoRunner::new(Duration::ZERO)), shared.clone());
-
-    supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    shared.write().unwrap().worker.model = "haiku".to_string();
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
-
-    let models: Vec<_> = collected
-        .of_type("agent_model")
-        .into_iter()
-        .map(|e| (e["agent"].as_str().unwrap().to_string(), e["model"].as_str().unwrap().to_string()))
-        .collect();
-    assert!(models.contains(&("planner".to_string(), "demo-opus".to_string())));
-    assert!(models.contains(&("worker-1".to_string(), "demo-haiku".to_string())));
-    assert!(models.contains(&("reviewer-1".to_string(), "demo-sonnet".to_string())));
 }
 
 /// Wraps the demo runner to record when each agent starts, with a start gap.
@@ -234,28 +279,30 @@ impl agent_console_core::AgentRunner for GappedRunner {
         spec: &agent_console_core::config::AgentSpec,
         prompt: &str,
         resume: Option<&str>,
+        folder: &std::path::Path,
     ) -> Result<agent_console_core::AgentOutput, agent_console_core::AgentError> {
         self.starts.lock().unwrap().push((spec.id.clone(), std::time::Instant::now()));
-        self.inner.run_session(run, spec, prompt, resume).await
+        self.inner.run_session(run, spec, prompt, resume, folder).await
     }
 }
 
 #[tokio::test]
-async fn parallel_agents_start_one_gap_apart() {
-    let gap = Duration::from_millis(300);
+async fn parallel_workers_start_one_gap_apart() {
+    let gap = Duration::from_millis(200);
     let runner =
         Arc::new(GappedRunner { inner: DemoRunner::new(Duration::ZERO), gap, starts: Default::default() });
-    let orchestrator = Orchestrator::new(runner.clone(), settings::shared(Settings::default()));
+    let orchestrator =
+        Orchestrator::new(runner.clone(), settings::shared(Settings::default()), Isolation::SharedFolder);
     let run = new_run(".", &Collected::default());
 
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
-    supervised(run.clone(), orchestrator.build_and_review(&run, run.tasks())).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
 
     let starts = runner.starts.lock().unwrap().clone();
     let at = |agent: &str| starts.iter().find(|(id, _)| id == agent).map(|(_, at)| *at).unwrap();
-    // Both waits are measured from the same moment, and the first agent itself starts a
+    // Each wait is measured from the same moment, and the first worker itself starts a
     // millisecond or so after that, so allow a little slack.
     let at_least = gap - Duration::from_millis(20);
     assert!(at("worker-2") - at("worker-1") >= at_least);
-    assert!(at("reviewer-2") - at("reviewer-1") >= at_least);
+    assert!(at("worker-3") - at("worker-2") >= at_least);
 }

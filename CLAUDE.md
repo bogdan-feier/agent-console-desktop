@@ -1,9 +1,9 @@
 # Project guide for Claude
 
-Agent Console: a macOS desktop app (Tauri 2, Rust) that runs a planner (Opus), two
-workers (Sonnet) and two reviewers (Sonnet) on a project by driving the `claude` CLI.
-The user can brainstorm with the planner, message any agent that has worked, and change
-each role's model and effort in Settings.
+Agent Console: a macOS desktop app (Tauri 2, Rust) that runs a team on one project by
+driving the `claude` CLI: Jarvis (Haiku) answers or routes each message, a planner (Opus)
+brainstorms and plans, up to 3 workers (Sonnet) build in their own git worktrees, and one
+reviewer checks all their work merged together. The user applies or discards each round.
 
 ## Commands
 - Run from source: `cargo tauri dev` (demo mode: `AGENT_CONSOLE_DEMO=1 cargo tauri dev`)
@@ -16,7 +16,9 @@ each role's model and effort in Settings.
 - `crates/core/` is the engine. No Tauri, no UI. Everything here is unit-testable.
   - `config.rs`: default models, permissions, role instructions. Tunables go here as named constants.
   - `settings.rs`: what the Settings window changes (model and effort per role, budget, MCP), presets.
-  - `changes.rs`: the worker's git diff for the reviewer's prompt.
+  - `changes.rs`: a git diff for the reviewer's prompt (shared-folder mode).
+  - `worktrees.rs`: every git operation for a round: create, commit, merge, apply, remove.
+    Nothing else runs git.
   - `orchestrator.rs`: the plan, build, review flow.
   - `claude/`: the only code that starts or parses the `claude` program.
 - `src-tauri/` is the app shell: commands the page calls, and event forwarding. Keep it thin.

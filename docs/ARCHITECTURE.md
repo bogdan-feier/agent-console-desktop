@@ -27,19 +27,46 @@
   settings file, and forwards every event from the engine to the window.
 - **`crates/core/`** does the work and has no UI code, so it is tested without a window.
 
-## What happens when you press "Start planning"
+## What happens when you press "Send"
 
-1. `ui/app.js` calls `invoke("start_run", { projectDir, request, demo })`.
-2. `start_run` in `src-tauri/src/lib.rs` checks the input, creates a `Run`, and starts the
-   planning phase in the background. It returns the run's ID straight away.
-3. `Orchestrator::plan` (core) runs the planner through `run_agent`.
+1. `ui/app.js` calls `invoke("start_run", ...)` for the first message of a run, or
+   `invoke("send", ...)` after that.
+2. The command in `src-tauri/src/lib.rs` checks the action is allowed now
+   (`orchestrator::can_message`), starts the work in the background, and returns at once.
+3. `Orchestrator::ask` (core) runs Jarvis through `run_agent`. Jarvis answers with JSON
+   (`Routing` in `config.rs`): answer it itself, or pass it on to brainstorm or to plan.
 4. `ClaudeRunner::run_session` starts `claude -p --output-format stream-json ...` in the
-   project folder, writes the prompt to its stdin, and reads its stdout line by line.
+   agent's folder (`Run::folder_for`), writes the prompt to its stdin, and reads its stdout
+   line by line.
 5. Each line is parsed (`claude/protocol.rs`) and turned into an `Event` on the `Run`.
 6. The `Run` hands every event to its sink, which emits `run-event` to the window.
 7. `handle()` in `ui/app.js` updates the matching panel.
 
-Approving the plan and "Send back" work the same way with `approve_plan` and `send_back`.
+Every other button works the same way: a command that checks (`can_approve`,
+`can_send_back`, `can_finish_round`...) and then starts one orchestrator method.
+
+## Rounds and worktrees
+
+A `Run` is one working session on one project; it can hold many rounds. A round starts when
+you approve a plan (`Orchestrator::build`) and ends with Apply or Discard.
+
+```text
+build:   Workspace::create  -> one worktree per worker + one "review" worktree, from HEAD
+         workers in parallel, each with its worktree as its folder
+         Workspace::commit_worker after each one (and after each chat with a worker)
+review:  Workspace::merge_into_review -> the reviewer runs in the review worktree
+         its prompt gets the merged diff; a second review gets only the diff since the first
+apply:   Workspace::apply  -> git merge --squash into your project (staged, not committed)
+         Workspace::remove -> worktrees and branches deleted
+```
+
+All git work is in `worktrees.rs`; nothing else runs git. Demo mode and most tests use
+`Isolation::SharedFolder` instead, where everyone works in the project folder and there is
+nothing to merge. `tests/worktree_round.rs` runs a whole round in real worktrees.
+
+Claude Code finds a session to resume by folder. Worktree paths stay the same for the
+whole round, so workers and the reviewer can be resumed until the round closes; then
+`Run::close_round` forgets their sessions.
 
 ## Talking to agents
 
@@ -50,10 +77,8 @@ chatting, agents use the "chat" version of their spec (`config::chat_spec`): sam
 tools, different instructions, and no JSON schema, so they answer in plain text.
 
 "Make plan" after a brainstorm resumes the planner's session too, this time with the plan
-schema, so the plan reflects the conversation.
-
-`orchestrator::can_chat` decides who may be messaged: the planner always, the others only
-once they have finished a turn, and nobody while something is running.
+schema, so the plan reflects the conversation. Jarvis and the planner keep their sessions
+across rounds; workers and the reviewer only within their round.
 
 ## Usage savings
 
@@ -64,8 +89,9 @@ once they have finished a turn, and nobody while something is running.
 - `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds
   apart (`PARALLEL_START_GAP` in `config.rs`), so the later ones can reuse the prompt cache.
   The demo runner leaves it at zero.
-- `changes.rs` collects the worker's diff with git, and `reviewer_prompt` puts it in the
-  reviewer's prompt.
+- One reviewer checks every task at once, and its prompt includes the merged diff
+  (`Workspace::review_changes`). A second review resumes its session and only gets the diff
+  since the commit it last reviewed.
 - Every session has `--max-turns` (from `config.rs`) and `--max-budget-usd` (from Settings).
   When one stops at a limit, `ClaudeRunner` still keeps its session, so a message continues it.
 - The `result` event carries the session's token counts (`TokenUsage` in `event.rs`), which
@@ -113,7 +139,9 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 | Where | What it covers |
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
-| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: brainstorm, plan, build, review, follow-ups, fix, stop, live settings changes |
+| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: Jarvis routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
+| `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files |
+| `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes, apply refusing, cleanup |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |
 | `#[cfg(test)]` in `crates/core/src/changes.rs` | Diffs from real temporary git repositories |
 

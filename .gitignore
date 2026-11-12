@@ -1,0 +1,6 @@
+/target/
+/src-tauri/gen/
+.DS_Store
+.env
+.claude/settings.local.json
+CLAUDE.local.md

@@ -1,0 +1,102 @@
+# Architecture
+
+## The three parts
+
+```text
++--------------------+   invoke("start_run", ...)   +----------------------+
+|  ui/               | ---------------------------> |  src-tauri/          |
+|  the page          |                              |  the app shell       |
+|  HTML, CSS, JS     | <--------------------------- |  commands + events   |
++--------------------+   "run-event" events         +----------+-----------+
+                                                               |
+                                                               | plain Rust calls
+                                                               v
+                                                    +----------------------+
+                                                    |  crates/core/        |
+                                                    |  the engine          |
+                                                    +----------+-----------+
+                                                               |
+                                                               | starts a process per agent,
+                                                               | reads JSON lines from it
+                                                               v
+                                                         claude  claude  claude
+```
+
+- **`ui/`** draws the window's contents. It knows nothing about agents; it shows events.
+- **`src-tauri/`** is small on purpose. It exposes seven commands to the page and forwards
+  every event from the engine to the window.
+- **`crates/core/`** does the work and has no UI code, so it is tested without a window.
+
+## What happens when you press "Start planning"
+
+1. `ui/app.js` calls `invoke("start_run", { projectDir, request, demo })`.
+2. `start_run` in `src-tauri/src/lib.rs` checks the input, creates a `Run`, and starts the
+   planning phase in the background. It returns the run's ID straight away.
+3. `Orchestrator::plan` (core) runs the planner through `run_agent`.
+4. `ClaudeRunner::run_session` starts `claude -p --output-format stream-json ...` in the
+   project folder, writes the prompt to its stdin, and reads its stdout line by line.
+5. Each line is parsed (`claude/protocol.rs`) and turned into an `Event` on the `Run`.
+6. The `Run` hands every event to its sink, which emits `run-event` to the window.
+7. `handle()` in `ui/app.js` updates the matching panel.
+
+Approving the plan and "Send back" work the same way with `approve_plan` and `send_back`.
+
+## Events
+
+Events are the only thing that flows from the engine to the page. Each one is a flat
+JSON object with a sequence number:
+
+```json
+{"seq": 4, "agent": "worker-1", "type": "tool", "name": "Read", "detail": "src/a.py"}
+```
+
+The list of event types is the `EventKind` enum in `crates/core/src/event.rs`. The page
+shows events strictly in `seq` order. If it notices a gap, or it was just reloaded, it
+calls `run_events` to fetch the whole list and shows what it has not shown yet.
+
+## Stopping
+
+Pressing Stop sends a signal that `supervised()` (in `orchestrator.rs`) is waiting on.
+The future doing the work is dropped. Dropping it:
+
+- kills each `claude` process (`kill_on_drop`) and everything that process started
+  (`ProcessGroupGuard` in `claude/mod.rs`);
+- marks each running agent as "stopped" (`StatusGuard` in `runner.rs`).
+
+## Finding `claude`
+
+An app opened from Finder does not get your terminal's PATH. `claude/locate.rs` asks your
+login shell for its PATH once, looks for `claude` there and in a few usual places, and
+passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are found too.
+
+## Tests
+
+| Where | What it covers |
+|---|---|
+| `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, command line, JSON parsing, PATH handling |
+| `crates/core/tests/flow.rs` | The whole plan, build, review, fix and stop flow with the scripted demo agents |
+| `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing |
+
+Nothing in the tests calls the real `claude`.
+
+## Rust notes for a Python reader
+
+| You will see | What it is | Closest thing in Python |
+|---|---|---|
+| `struct`, `enum` | Data types. An enum can carry different data per variant. | `@dataclass`, and a tagged union |
+| `Option<T>` | "A value or nothing": `Some(x)` or `None`. | `T \| None`, but the compiler makes you handle `None` |
+| `Result<T, E>` | "A value or an error": `Ok(x)` or `Err(e)`. | Raising exceptions, made explicit in the return type |
+| `?` after an expression | "If this is an error, return it from this function now." | Letting an exception propagate |
+| `trait` (`AgentRunner`) | A set of methods a type promises to have. | An abstract base class or a `Protocol` |
+| `Arc<T>` | A shared pointer several tasks can hold at once. | Ordinary Python references |
+| `Mutex<T>` | Data that must be locked before use, so two tasks never change it at once. | `threading.Lock` around a value |
+| `async fn`, `.await` | The same idea as in Python. | `async def`, `await` |
+| `tokio::select!` | Wait for whichever of several things finishes first. | `asyncio.wait(..., return_when=FIRST_COMPLETED)` |
+| `impl Drop` | Code that runs when a value goes away, however that happens. | `try/finally` or a context manager's `__exit__` |
+| `#[derive(Serialize)]` | Generates the code to turn the type into JSON. | `dataclasses.asdict` plus `json.dumps` |
+| `#[tauri::command]` | Makes a function callable from the page with `invoke`. | A FastAPI route |
+
+The Python version of this app lives in `~/projects/agent-console`. The files map across
+almost one to one: `config.py` to `config.rs`, `orchestrator.py` to `orchestrator.rs`,
+`runner.py` to `runner.rs` plus `claude/`, `run.py` to `run.rs` and `event.rs`,
+`server.py` to `src-tauri/src/lib.rs`.

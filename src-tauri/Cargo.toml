@@ -1,0 +1,25 @@
+[package]
+name = "agent-console"
+description = "Desktop app: a planner, two workers and two reviewers, powered by Claude."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "agent_console_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-console"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+agent-console-core = { path = "../crates/core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

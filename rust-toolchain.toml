@@ -1,0 +1,4 @@
+# Everyone who builds this repo gets the same toolchain, with the formatter and linter.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

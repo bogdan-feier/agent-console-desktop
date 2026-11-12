@@ -1,0 +1,156 @@
+/* Agent Console styles.
+   Colours are defined once as variables; the dark set replaces them when macOS is in dark mode.
+   Each lane has a hue (plan, build, review) that marks everything belonging to that stage. */
+
+:root {
+  --paper: #eef1f5;
+  --surface: #ffffff;
+  --ink: #18212b;
+  --muted: #5b6875;
+  --line: #d3dae2;
+  --plan: #4353c4;
+  --build: #0e7c7b;
+  --review: #a85d00;
+  --good: #1f8a4c;
+  --bad: #c23b31;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12171d;
+    --surface: #1a2129;
+    --ink: #e6ebf0;
+    --muted: #93a0ad;
+    --line: #2c3641;
+    --plan: #97a4ff;
+    --build: #53c9c4;
+    --review: #f0a441;
+    --good: #5fcf8d;
+    --bad: #ff8478;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.5 var(--sans);
+}
+button, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--plan); outline-offset: 2px; }
+
+/* The page fills the window; the lanes take whatever height is left and each
+   agent panel scrolls on its own, so the form and the lane titles stay in view. */
+.page {
+  max-width: 1600px; height: 100vh; margin: 0 auto; padding: 14px 20px 18px;
+  display: flex; flex-direction: column;
+}
+
+.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.top .powered { color: var(--muted); font-size: 13px; }
+.top .demo-switch { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin: 0; cursor: pointer; }
+.top .demo-switch input { accent-color: var(--review); margin: 0; }
+.top .state { margin-left: auto; font-size: 14px; color: var(--muted); }
+.top .state strong { color: var(--ink); font-weight: 600; }
+.chip {
+  font-size: 12px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+
+/* The brief: what to build, and where. */
+.brief {
+  display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 2fr) auto;
+  gap: 12px; align-items: end;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 18px;
+}
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], textarea {
+  width: 100%; background: var(--paper); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 9px;
+}
+textarea { display: block; resize: vertical; min-height: 38px; }
+.brief input { font-family: var(--mono); font-size: 13px; }
+.brief .actions, .brief .folder { display: flex; gap: 8px; }
+.brief .folder input { flex: 1; min-width: 0; }
+button {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+  padding: 7px 14px; cursor: pointer; white-space: nowrap;
+}
+button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 600; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+.notice { grid-column: 1 / -1; color: var(--bad); font-size: 14px; margin: 0; }
+.notice:empty { display: none; }
+
+/* Three lanes, left to right: plan, build, review.
+   Each worker shares a row with the reviewer that checks it. */
+.lanes {
+  display: grid; gap: 12px 14px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  flex: 1; min-height: 0;
+}
+.lane-title {
+  font-size: 14px; font-weight: 650; padding-bottom: 6px;
+  border-bottom: 3px solid var(--hue); display: flex; justify-content: space-between; gap: 8px;
+}
+.lane-title span { font-weight: 400; color: var(--muted); }
+.plan-hue { --hue: var(--plan); }
+.build-hue { --hue: var(--build); }
+.review-hue { --hue: var(--review); }
+
+.agent {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--hue);
+  border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.agent[data-agent=planner] { grid-row: 2 / span 2; }
+.agent header {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.agent header h2 { font-size: 15px; font-weight: 650; margin: 0; }
+.status { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.agent[data-status=running] .status { color: var(--hue); }
+.agent[data-status=running] .status::before { background: var(--hue); animation: pulse 1.2s ease-in-out infinite; }
+.agent[data-status=done] .status::before { background: var(--good); }
+.agent[data-status=error] .status { color: var(--bad); }
+.agent[data-status=error] .status::before { background: var(--bad); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .agent .status::before { animation: none !important; } }
+
+.log { padding: 10px 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 7px; }
+.empty { color: var(--muted); font-size: 14px; margin: 0; }
+.say { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+.say code { font-family: var(--mono); font-size: 0.9em; background: var(--paper); padding: 0 4px; border-radius: 3px; }
+.tool { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.tool b { color: var(--hue); font-weight: 600; }
+.tool.failed, .problem { color: var(--bad); }
+.problem { font-size: 14px; }
+.round { font-size: 13px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 7px; margin-top: 3px; }
+.cost { font-size: 12.5px; color: var(--muted); }
+
+.plan { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.plan p { margin: 0; }
+.task { border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; gap: 8px; }
+.task .goes-to { font-size: 13px; color: var(--build); font-weight: 600; }
+.task textarea { min-height: 96px; }
+.task .files { font-family: var(--mono); font-size: 12.5px; }
+
+.verdict { border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; gap: 6px; }
+.verdict h3 { margin: 0; font-size: 15px; }
+.verdict.approve h3 { color: var(--good); }
+.verdict.needs_changes h3 { color: var(--bad); }
+.verdict p, .verdict ul { margin: 0; }
+.verdict ul { padding-left: 18px; }
+.verdict .kind { font-size: 13px; color: var(--muted); }
+.verdict button { justify-self: start; }
+
+@media (max-width: 980px) {
+  .brief { grid-template-columns: 1fr; }
+  .page { height: auto; }
+  .lanes { grid-template-columns: 1fr; grid-template-rows: none; }
+  .agent[data-agent=planner] { grid-row: auto; }
+  .agent { max-height: 60vh; }
+}

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Console</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <span class="chip" id="auth-chip"></span>
+    <label class="demo-switch" title="Scripted agents: nothing is edited and nothing is spent">
+      <input type="checkbox" id="demo"> Demo mode
+    </label>
+    <span class="powered">Powered by Claude</span>
+    <span class="state" id="run-state">Nothing running</span>
+  </div>
+
+  <form class="brief" id="brief">
+    <div>
+      <label for="project-dir">Project folder</label>
+      <div class="folder">
+        <input type="text" id="project-dir" placeholder="~/projects/agentic-workflow-starter" autocomplete="off" spellcheck="false">
+        <button type="button" id="choose-folder">Choose</button>
+      </div>
+    </div>
+    <div>
+      <label for="request">What should the team build?</label>
+      <textarea id="request" rows="1" placeholder="Add a function that returns the longest word in a text, with tests"></textarea>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit" id="start">Start planning</button>
+      <button type="button" id="stop" disabled>Stop</button>
+    </div>
+    <p class="notice" id="notice" role="alert"></p>
+  </form>
+
+  <div class="lanes" id="lanes">
+    <div class="lane-title plan-hue">Plan <span>one planner reads the project and splits the work</span></div>
+    <div class="lane-title build-hue">Build <span>workers run at the same time</span></div>
+    <div class="lane-title review-hue">Review <span>one reviewer per worker</span></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

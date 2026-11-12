@@ -1,0 +1,25 @@
+//! The engine of Agent Console, with no UI code in it.
+//!
+//! Reading order if you are new to the codebase:
+//!
+//! 1. [`config`]: who the agents are and what they may do.
+//! 2. [`orchestrator`]: the order they run in (plan, build, review).
+//! 3. [`runner`]: how one agent is started and reported on.
+//! 4. [`claude`]: the only code that talks to the `claude` program.
+//! 5. [`run`] and [`event`]: the state of one job and what the UI is told.
+//!
+//! The Tauri app in `src-tauri/` is a thin layer over this crate. Keeping the
+//! engine separate means it can be tested without opening a window.
+
+pub mod claude;
+pub mod config;
+pub mod demo;
+pub mod event;
+pub mod orchestrator;
+pub mod run;
+pub mod runner;
+
+pub use event::{Event, EventKind};
+pub use orchestrator::Orchestrator;
+pub use run::{Run, RunState};
+pub use runner::{AgentError, AgentOutput, AgentRunner};

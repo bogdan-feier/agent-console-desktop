@@ -313,6 +313,12 @@ impl Run {
         self.lock().sessions.insert(agent.to_string(), session);
     }
 
+    /// Forget an agent's session, so its next message starts a conversation from
+    /// nothing. The way out of a session that has grown long and expensive.
+    pub fn forget_session(&self, agent: &str) -> bool {
+        self.lock().sessions.remove(agent).is_some()
+    }
+
     // --- The open round ----------------------------------------------------------
 
     /// True while a round's changes are waiting to be applied or discarded.
@@ -439,6 +445,15 @@ impl Run {
             Some(signal) => signal.send(()).is_ok(),
             None => false,
         }
+    }
+
+    /// A phase ended without finishing: something inside the app panicked. The
+    /// run is left able to act again — without this it would wait for a phase
+    /// that will never end, with Stop unable to help because nothing is listening.
+    pub fn phase_crashed(&self, message: &str) {
+        self.end_phase();
+        self.emit(None, EventKind::Error { message: message.to_string() });
+        self.set_state(RunState::Failed);
     }
 
     pub(crate) fn begin_phase(&self) -> oneshot::Receiver<()> {

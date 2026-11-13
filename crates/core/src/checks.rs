@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
+use crate::process::Group;
+
 /// How long the check may run before it is given up on.
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(300);
 /// How much of its output is kept, in characters.
@@ -33,17 +35,38 @@ pub struct Checked {
 /// not agent input, and it is not checked for anything beyond being one line.
 pub async fn run(dir: &Path, command: &str) -> Checked {
     let started = Instant::now();
-    let child = Command::new("sh")
+    let mut building = Command::new("sh");
+    building
         .arg("-c")
         .arg(command)
         .current_dir(dir)
         // Nothing is there to type an answer, so give it no input at all.
         .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // A check command starts other programs (a compiler, a test runner). Putting
+    // it in a group of its own means a check that runs too long takes them with it.
+    #[cfg(unix)]
+    building.process_group(0);
 
-    let result = tokio::time::timeout(CHECK_TIMEOUT, child).await;
-    let took = seconds(started.elapsed());
+    let spawned = building.spawn();
+    let took_so_far = || seconds(started.elapsed());
+    let child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            return Checked {
+                command: command.to_string(),
+                passed: false,
+                note: format!("could not be run ({error})"),
+                output: String::new(),
+            }
+        }
+    };
+    let mut group = Group(child.id());
+
+    let result = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await;
+    let took = took_so_far();
     let command = command.to_string();
 
     match result {
@@ -60,6 +83,7 @@ pub async fn run(dir: &Path, command: &str) -> Checked {
             output: String::new(),
         },
         Ok(Ok(output)) => {
+            group.finished();
             let passed = output.status.success();
             let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -115,6 +139,23 @@ mod tests {
         let checked = run(dir.path(), "echo nope; exit 3").await;
         assert!(!checked.passed);
         assert!(checked.note.contains("exit code 3"), "{}", checked.note);
+    }
+
+    #[tokio::test]
+    async fn a_check_that_runs_too_long_takes_what_it_started_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("still-running.txt");
+        // A shell that starts a long-lived child and then waits forever itself.
+        let command = format!("(while true; do echo x >> {}; sleep 0.05; done) & sleep 60", marker.display());
+        let soon = tokio::time::timeout(Duration::from_millis(700), run(dir.path(), &command)).await;
+        // The check itself is still going when we stop waiting; dropping it kills
+        // the group, so the child stops writing.
+        assert!(soon.is_err(), "the check was still running");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let size = std::fs::metadata(&marker).map(|data| data.len()).unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let later = std::fs::metadata(&marker).map(|data| data.len()).unwrap_or(0);
+        assert_eq!(size, later, "nothing it started is still writing");
     }
 
     #[tokio::test]

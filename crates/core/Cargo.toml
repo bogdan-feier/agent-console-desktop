@@ -14,5 +14,9 @@ futures = "0.3"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# Only for killpg: stopping an agent has to stop everything it started.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

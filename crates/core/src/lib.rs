@@ -20,14 +20,36 @@ pub mod claude;
 pub mod config;
 pub mod event;
 pub mod orchestrator;
+pub mod process;
 pub mod project;
 pub mod run;
 pub mod runner;
 pub mod settings;
 pub mod worktrees;
 
+/// "1 file", "3 files": a count with its word, so no message says "1 file(s)".
+pub fn plural(count: usize, word: &str) -> String {
+    if count == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{count} {word}s")
+    }
+}
+
 pub use event::{Event, EventKind};
 pub use orchestrator::Orchestrator;
 pub use run::{Run, RunState};
 pub use runner::{AgentError, AgentOutput, AgentRunner};
 pub use settings::{Settings, SharedSettings};
+
+#[cfg(test)]
+mod tests {
+    use super::plural;
+
+    #[test]
+    fn counts_come_with_the_right_word() {
+        assert_eq!(plural(0, "file"), "0 files");
+        assert_eq!(plural(1, "file"), "1 file");
+        assert_eq!(plural(2, "file"), "2 files");
+    }
+}

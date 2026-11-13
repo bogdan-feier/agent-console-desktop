@@ -114,13 +114,16 @@ impl Workspace {
         let changes = git(project_dir, &["status", "--porcelain"]).await?;
         let changed_files = changes.lines().filter(|line| !line.trim().is_empty()).count();
         if changed_files > 0 {
+            let files = crate::plural(changed_files, "file");
             return Err(format!(
-                "The project has uncommitted changes ({changed_files} files). Commit or stash them first: the \
+                "The project has uncommitted changes ({files}). Commit or stash them first: the \
                  workers start from the last commit, and Apply needs a clean folder to put their work in."
             ));
         }
-        // Forget worktrees whose folders no longer exist (from an app that was force-quit).
+        // Forget worktrees whose folders no longer exist (from an app that was
+        // force-quit), and the branches that went with them.
         let _ = git(project_dir, &["worktree", "prune"]).await;
+        clear_dead_branches(project_dir).await;
 
         let name = format!("{run_id}-round{round}");
         let workspace = Workspace {
@@ -151,6 +154,16 @@ impl Workspace {
 
     pub fn worker_count(&self) -> usize {
         self.workers
+    }
+
+    /// The folder holding this round's worktrees.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// What all of this round's branch names start with.
+    pub fn branch_prefix(&self) -> &str {
+        &self.branch_prefix
     }
 
     /// Open a round's worktrees again, after a restart, from what was saved about
@@ -408,6 +421,31 @@ fn why(problem: String) -> String {
     }
 }
 
+/// Delete this app's leftover branches that hold nothing.
+///
+/// Every round leaves a branch per worker plus one for the review. They are
+/// deleted with the round, but an app that was force-quit never gets to do that,
+/// and the project's branch list fills up with dead rounds. Two kinds are left
+/// alone: a branch whose worktree is still there, because that round can still
+/// be picked up, and a branch with work on it, because once the worktrees are
+/// gone the branch is the only copy of it left. `git branch -d` is the safe
+/// delete: it refuses a branch that is not already in the project's history,
+/// which is exactly the branches worth keeping.
+async fn clear_dead_branches(project_dir: &Path) {
+    let Ok(listed) = git(project_dir, &["worktree", "list", "--porcelain"]).await else { return };
+    let in_use: Vec<&str> =
+        listed.lines().filter_map(|line| line.strip_prefix("branch refs/heads/")).collect();
+
+    let ours = ["branch", "--list", "--format=%(refname:short)", "agent-console/*"];
+    let Ok(branches) = git(project_dir, &ours).await else { return };
+    for branch in branches.lines().map(str::trim).filter(|branch| !branch.is_empty()) {
+        if !in_use.contains(&branch) {
+            // -d, never -D: a branch git refuses to delete still has work on it.
+            let _ = git(project_dir, &["branch", "-d", branch]).await;
+        }
+    }
+}
+
 /// Split one `git diff` into (path, patch) pairs, one per file.
 fn split_patches(diff: &str) -> Vec<(String, String)> {
     let mut files: Vec<(String, String)> = Vec::new();
@@ -605,6 +643,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn branches_from_a_force_quit_round_are_cleared_away_and_live_ones_kept() {
+        let project = project();
+        let abandoned = Workspace::create(project.path(), &run_id(), 1, 2).await.unwrap();
+        let kept = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        // As a force-quit leaves it: the folders gone, the branches still there.
+        fs::remove_dir_all(abandoned.root()).unwrap();
+
+        let fresh = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        let left =
+            run_git(project.path(), &["branch", "--list", "--format=%(refname:short)", "agent-console/*"]);
+        let names: Vec<&str> = left.lines().collect();
+        assert!(
+            !names.iter().any(|branch| branch.starts_with(abandoned.branch_prefix())),
+            "the dead round's branches are gone: {left}"
+        );
+        assert!(
+            names.iter().any(|branch| branch.starts_with(kept.branch_prefix())),
+            "a live round is untouched"
+        );
+        assert!(names.iter().any(|branch| branch.starts_with(fresh.branch_prefix())));
+
+        kept.remove().await;
+        fresh.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_leftover_branch_that_still_holds_work_is_not_deleted() {
+        let project = project();
+        // A round that was force-quit after a worker had committed something.
+        let abandoned = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(abandoned.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        abandoned.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        fs::remove_dir_all(abandoned.root()).unwrap();
+
+        let fresh = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        let left =
+            run_git(project.path(), &["branch", "--list", "--format=%(refname:short)", "agent-console/*"]);
+        let worker = abandoned.branch("worker-1");
+        assert!(
+            left.lines().any(|branch| branch == worker),
+            "the work is the only copy left, so the branch stays: {left}"
+        );
+        // The review branch of the same round had nothing on it, so it is gone.
+        assert!(!left.lines().any(|branch| branch == abandoned.review_branch()), "{left}");
+
+        fresh.remove().await;
+        run_git(project.path(), &["branch", "-D", &worker]);
+    }
+
+    #[tokio::test]
     async fn a_round_can_be_opened_again_until_its_folders_are_gone() {
         let project = project();
         let run = run_id();
@@ -701,7 +789,7 @@ mod tests {
         let dirty = project();
         fs::write(dirty.path().join("a.py"), "edited\n").unwrap();
         let problem = Workspace::create(dirty.path(), &run_id(), 1, 1).await.unwrap_err();
-        assert!(problem.contains("uncommitted changes (1 files)"), "{problem}");
+        assert!(problem.contains("uncommitted changes (1 file)"), "{problem}");
     }
 
     #[tokio::test]

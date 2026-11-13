@@ -25,7 +25,7 @@ import { canNotify, invoke, listen } from "./parts/tauri.js";
 import {
   addStep, addToThread, addToTurn, endTurn, place, showRunTotal, showUsage, startTurn, thread, youSaid,
 } from "./parts/turns.js";
-import { AUTH_WORDS } from "./parts/words.js";
+import { AUTH_WORDS, count } from "./parts/words.js";
 
 // --- Sending ----------------------------------------------------------------
 
@@ -116,7 +116,10 @@ function handle(event) {
     case "tool_error": addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
     case "notice": place(agent, el("div", "note", event.text)); break;
     case "error": place(agent, el("div", "problem", event.message)); break;
-    case "result": showUsage(agent, event); break;
+    case "result":
+      showUsage(agent, event);
+      watchSessionLength(agent, event);
+      break;
     case "plan": showPlan(event); break;
     case "review": showReview(agent, event); break;
   }
@@ -152,6 +155,39 @@ function refusedStep(agent, event) {
   return node;
 }
 
+/// How much of a session's prompt is the conversation so far, in tokens, past
+/// which it is worth offering to start again.
+const LONG_SESSION = 120000;
+const warnedAbout = new Set();
+
+/// The dispatcher and the planner keep their conversation for the whole run, so
+/// it grows with every round and is resent on every turn. When one gets big,
+/// say so once and offer the way out.
+function watchSessionLength(agent, event) {
+  const used = event.tokens;
+  const prompt = used.input_tokens + used.cache_read_input_tokens + used.cache_creation_input_tokens;
+  const keepsTalking = agent.role === "dispatcher" || agent.role === "planner";
+  if (!keepsTalking || prompt < LONG_SESSION || warnedAbout.has(agent.id) || app.replaying) return;
+  warnedAbout.add(agent.id);
+
+  const note = el("div", "note");
+  note.append(agent.label + "'s conversation is up to " + count(prompt)
+    + " tokens, and all of it is sent again on every turn. ");
+  const fresh = button("Start " + agent.label + " fresh", async () => {
+    try {
+      await invoke("fresh_session", { runId: app.runId, agent: agent.id });
+      fresh.replaceWith(el("span", "", "Started fresh."));
+    } catch (error) {
+      fresh.replaceWith(el("span", "problem", String(error)));
+    }
+  });
+  fresh.title = "Forget this agent's conversation so far. The rest of the team is unchanged.";
+  note.append(fresh);
+  // Inside the turn, not after it: what the agent said next belongs to the same
+  // turn, and anything added between the two would split it in half.
+  addToTurn(agent, note);
+}
+
 /// Every event has a sequence number. Showing them strictly in order, each
 /// exactly once, means it does not matter whether an event arrives live or
 /// through catchUp().
@@ -163,14 +199,23 @@ function accept(event) {
 }
 
 /// Fetch the run's full event list and show whatever we have not shown yet.
+///
+/// Everything here has already happened, so `replaying` keeps the window from
+/// announcing it: no notification for a round that was reviewed yesterday.
 async function catchUp() {
   const events = await invoke("run_events", { runId: app.runId });
-  for (const event of events) accept(event);
+  app.replaying = true;
+  try {
+    for (const event of events) accept(event);
+  } finally {
+    app.replaying = false;
+  }
 }
 
 // --- Which run the window shows ---------------------------------------------
 
 function resetView() {
+  warnedAbout.clear();
   thread().replaceChildren();
   clearCards();
   app.roundOpen = false;
@@ -226,7 +271,11 @@ $("stop").addEventListener("click", () => {
 });
 
 $("new-run").addEventListener("click", () => {
-  if (app.roundOpen) return showProblem("Apply or discard the current changes first.");
+  // Only a round that is actually open stands in the way. A run being read has
+  // its old rounds in its history, but nothing of them is still live.
+  if (app.roundOpen && !app.readOnly) {
+    return showProblem("Apply or discard the current changes first.");
+  }
   clearProblem();
   // The next message starts a fresh run with new agent sessions.
   forgetRun();

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use agent_console_core::claude::{locate, ClaudeRunner};
 use agent_console_core::config::{self, AuthMode, Role, Task, PLANNER_ID};
+use agent_console_core::event::EventKind;
 use agent_console_core::orchestrator::{
     can_approve, can_chat, can_finish_round, can_message, can_send_back, supervised, Isolation,
 };
@@ -438,9 +439,16 @@ fn apply_changes(
 }
 
 /// Every run this app has saved, newest first.
+///
+/// This reads every saved run's file, so it is done on a thread of its own: a
+/// synchronous command runs on the thread that draws the window, and a long
+/// history would freeze it while the Runs window opened.
 #[tauri::command]
-fn recent_runs(state: State<'_, AppState>) -> Vec<RunSummary> {
-    state.runs_on_disk.list()
+async fn recent_runs(state: State<'_, AppState>) -> CommandResult<Vec<RunSummary>> {
+    let store = state.runs_on_disk.clone();
+    tokio::task::spawn_blocking(move || store.list())
+        .await
+        .map_err(|_| "The saved runs could not be read.".to_string())
 }
 
 /// Load a saved run so the window can show it again, and carry on with it when
@@ -450,7 +458,13 @@ async fn open_run(app: AppHandle, state: State<'_, AppState>, run_id: String) ->
     if let Some(run) = state.runs().get(&run_id).map(|active| active.run.clone()) {
         return Ok(Opened::of(&run, None));
     }
-    let (head, events) = state.runs_on_disk.read(&run_id)?;
+    let store = state.runs_on_disk.clone();
+    let id = run_id.clone();
+    // Reading a long run's file is slow enough to be worth keeping off the
+    // thread that draws the window.
+    let (head, events) = tokio::task::spawn_blocking(move || store.read(&id))
+        .await
+        .map_err(|_| "That run could not be read.".to_string())??;
     let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
     let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);
 
@@ -513,6 +527,22 @@ fn discard_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<
     Ok(())
 }
 
+/// Forget one agent's session, so its next message starts fresh. The way out of
+/// a conversation that has grown long enough to be expensive on every turn.
+#[tauri::command]
+fn fresh_session(state: State<'_, AppState>, run_id: String, agent: String) -> CommandResult<()> {
+    let (run, _) = state.find_live(&run_id)?;
+    if !run.forget_session(&agent) {
+        return Err("That agent has no conversation to forget.".to_string());
+    }
+    let text = "Starting fresh here: this agent will not remember what was said before. \
+                The rest of the team is unchanged."
+        .to_string();
+    run.emit(Some(&agent), EventKind::Notice { text });
+    state.runs_on_disk.save_state(&run);
+    Ok(())
+}
+
 #[tauri::command]
 fn stop_run(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
     state.find_live(&run_id)?.0.stop();
@@ -537,12 +567,22 @@ fn window_sink(app: AppHandle, store: Option<Arc<RunStore>>) -> EventSink {
 
 /// Do one phase in the background so the command can return right away, then
 /// save where the run got to, so it can be picked up again after a restart.
+///
+/// The phase runs in a task of its own so that a panic inside it is caught here.
+/// Without that, the run would be left waiting for a phase that had already
+/// died, with Stop unable to help, and the only way out would be to restart.
 fn spawn_phase<F>(store: Arc<RunStore>, run: Arc<Run>, work: F)
 where
     F: Future<Output = Result<(), AgentError>> + Send + 'static,
 {
     tauri::async_runtime::spawn(async move {
-        supervised(run.clone(), work).await;
+        let phase = tauri::async_runtime::spawn(supervised(run.clone(), work));
+        if phase.await.is_err() {
+            run.phase_crashed(
+                "Something went wrong inside the app and that step stopped. Nothing was lost: \
+                 any open round is still there. If it happens again, it is worth reporting.",
+            );
+        }
         store.save_state(&run);
     });
 }
@@ -591,6 +631,7 @@ pub fn run() {
             apply_changes,
             discard_changes,
             stop_run,
+            fresh_session,
             recent_runs,
             open_run
         ])

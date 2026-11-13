@@ -31,6 +31,12 @@ export function showPlan(event) {
   box.append(el("p", "hint",
     "You can edit the tasks above before approving. For a different plan, choose Plan below, "
     + "say what to change, and send."));
+  // Approving opens a round, and only one round is open at a time, so say why
+  // the button is greyed out rather than leaving the user to guess.
+  if (app.roundOpen) {
+    box.append(el("p", "hint round-wait",
+      "Approving waits on the round below: apply or discard those changes first."));
+  }
 
   addToThread(box);
   refreshControls();

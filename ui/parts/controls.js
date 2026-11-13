@@ -48,9 +48,10 @@ const CALLS_FOR_YOU = {
 
 function tellTheUser(state) {
   const message = CALLS_FOR_YOU[state];
+  if (!message || app.replaying) return; // replaying an old run is not news
   // hasFocus(), not hidden: a window can be in plain sight behind another app's,
   // and someone looking at that other app still wants to be told.
-  if (message && !document.hasFocus()) notify(message[0], message[1]);
+  if (!document.hasFocus()) notify(message[0], message[1]);
 }
 
 export function setRound(open) {
@@ -63,6 +64,8 @@ export function setRound(open) {
     // The workers' and reviewer's sessions ended with the round.
     for (const agent of Object.values(agents)) if (agent.card) agent.hasWorked = false;
     for (const old of thread().querySelectorAll(".decision.review button")) old.remove();
+    // Nothing is waiting on that round any more, so neither is any plan.
+    for (const hint of thread().querySelectorAll(".round-wait")) hint.remove();
   }
   refreshStages();
   refreshControls();

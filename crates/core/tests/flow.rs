@@ -5,15 +5,16 @@
 
 mod common;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_console_core::config::{Task, Verdict};
+use agent_console_core::config::{AgentSpec, Task, Verdict};
 use agent_console_core::orchestrator::{
     can_approve, can_chat, can_finish_round, can_send_back, supervised, Isolation,
 };
 use agent_console_core::settings::{self, Settings};
-use agent_console_core::{Orchestrator, RunState};
+use agent_console_core::{AgentError, AgentOutput, AgentRunner, Orchestrator, Run, RunState};
 use common::scripted::ScriptedRunner;
 use common::{new_run, Collected};
 
@@ -318,4 +319,60 @@ async fn parallel_workers_start_one_gap_apart() {
     let at_least = gap - Duration::from_millis(20);
     assert!(at("worker-2") - at("worker-1") >= at_least);
     assert!(at("worker-3") - at("worker-2") >= at_least);
+}
+
+/// A runner whose planner answers with prose where a plan was asked for, which a
+/// real model does now and then.
+struct RamblingRunner;
+
+#[async_trait::async_trait]
+impl AgentRunner for RamblingRunner {
+    async fn run_session(
+        &self,
+        _run: &Run,
+        _spec: &AgentSpec,
+        _prompt: &str,
+        _resume: Option<&str>,
+        _folder: &Path,
+    ) -> Result<AgentOutput, AgentError> {
+        Ok(AgentOutput {
+            text: "I had a think about it and I would start with the parser.".to_string(),
+            structured: None,
+            session_id: Some("s".to_string()),
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_agent_that_answers_with_prose_instead_of_a_plan_fails_readably() {
+    let orchestrator = Orchestrator::new(
+        Arc::new(RamblingRunner),
+        settings::shared(Settings::default()),
+        Isolation::SharedFolder,
+    );
+    let collected = Collected::default();
+    let run = new_run("/tmp", &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+
+    assert_eq!(run.state(), RunState::Failed, "it stops rather than carrying on with nothing");
+    let problems = collected.of_type("error");
+    assert!(
+        problems.iter().any(|event| event["message"].as_str().unwrap().contains("structured answer")),
+        "the user is told what went wrong: {problems:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_phase_that_crashes_leaves_the_run_able_to_act_again() {
+    let collected = Collected::default();
+    let run = new_run("/tmp", &collected);
+
+    // What `spawn_phase` does when the task running a phase panicked.
+    run.phase_crashed("Something went wrong inside the app and that step stopped.");
+
+    assert_eq!(run.state(), RunState::Failed);
+    assert!(run.is_at_rest(), "the window is not left waiting for a phase that died");
+    let problems = collected.of_type("error");
+    assert_eq!(problems.len(), 1);
 }

@@ -19,6 +19,7 @@ export const app = {
   verdict: null,    // the reviewer's latest verdict in the open round
   readOnly: false,  // true when showing a finished run from an earlier launch
   nextSeq: 0,       // sequence number of the next event we expect for this run
+  replaying: false, // true while an older run's events are being shown again
   cost: 0,          // API-equivalent dollars the agents of this run have used
   tokens: 0,        // tokens the agents of this run have used, all kinds together
 };

@@ -110,11 +110,6 @@ export function place(agent, node) {
   else addToCard(agent, node);
 }
 
-/// Anything with no agent of its own belongs to the run: show it in the conversation.
-export function placeRunWide(node) {
-  addToThread(node);
-}
-
 // --- Usage ------------------------------------------------------------------
 
 /// One small line per finished session, and a running total for the run in the bar.

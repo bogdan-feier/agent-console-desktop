@@ -19,6 +19,7 @@ use tokio::process::Command;
 
 use crate::config::{self, AgentSpec, AuthMode};
 use crate::event::EventKind;
+use crate::process::Group;
 use crate::run::Run;
 use crate::runner::{AgentError, AgentOutput, AgentRunner};
 
@@ -93,23 +94,32 @@ impl AgentRunner for ClaudeRunner {
         let mut child =
             command.spawn().map_err(|error| AgentError(format!("Could not start claude: {error}")))?;
 
-        let mut group = ProcessGroupGuard(child.id());
+        let mut group = Group(child.id());
 
-        // Send the prompt, then close stdin so claude knows the prompt is complete.
-        let mut stdin = child.stdin.take().expect("stdin was requested above");
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(|error| AgentError(format!("Could not send the prompt to claude: {error}")))?;
-        drop(stdin);
-
-        // Collect stderr in the background so a chatty process can never block on it.
+        // Collect stderr in the background so a chatty process can never block on
+        // it, and so it is already being read if the next step goes wrong.
         let mut stderr = child.stderr.take().expect("stderr was requested above");
         let stderr_text = tokio::spawn(async move {
             let mut text = String::new();
             let _ = stderr.read_to_string(&mut text).await;
             text
         });
+
+        // Send the prompt, then close stdin so claude knows the prompt is complete.
+        let mut stdin = child.stdin.take().expect("stdin was requested above");
+        if let Err(error) = stdin.write_all(prompt.as_bytes()).await {
+            // A broken pipe means claude was already gone, and what it printed on
+            // its way out says why. That is the message worth showing, not ours.
+            drop(stdin);
+            let _ = child.wait().await;
+            group.finished();
+            let said = stderr_text.await.unwrap_or_default();
+            return Err(AgentError(match said.trim() {
+                "" => format!("Could not send the prompt to claude: {error}"),
+                reason => format!("claude stopped before it could be given the prompt: {}", shorten(reason)),
+            }));
+        }
+        drop(stdin);
 
         let stdout = child.stdout.take().expect("stdout was requested above");
         let mut lines = BufReader::new(stdout).lines();
@@ -161,7 +171,7 @@ impl AgentRunner for ClaudeRunner {
         }
         let _ = child.wait().await;
         // The process ended on its own: nothing left to kill.
-        group.0 = None;
+        group.finished();
 
         let Some(result) = final_line else {
             let stderr_text = stderr_text.await.unwrap_or_default();
@@ -210,27 +220,6 @@ fn describe_failure(result: &ResultLine) -> String {
                                    let it continue, or raise the cap."
             .to_string(),
         _ => result.result.clone().unwrap_or_else(|| result.subtype.clone()),
-    }
-}
-
-/// Kills a whole process group when dropped.
-///
-/// `kill_on_drop` only kills `claude` itself. Commands that claude started
-/// would keep running, so when a session is dropped early (the user pressed
-/// Stop) the whole group is told to quit.
-struct ProcessGroupGuard(Option<u32>);
-
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(group) = self.0 {
-            // `kill -KILL -<group>` signals every process in the group. Using
-            // the system's `kill` program avoids unsafe code for one system call.
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", "--", &format!("-{group}")])
-                .stderr(Stdio::null())
-                .status();
-        }
     }
 }
 

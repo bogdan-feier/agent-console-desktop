@@ -55,12 +55,17 @@ jobs:
         run: cargo test --workspace
 
   page:
-    name: The page parses
+    name: The page
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Check every module
+      - name: Every module parses
         run: for file in ui/app.js ui/parts/*.js; do node --check "$file"; done
+      # No dependencies and no browser: these check what can be checked without
+      # one, which is the Markdown the agents write and whether the page and its
+      # modules still agree with each other.
+      - name: Tests
+        run: node --test ui/tests/*.test.mjs

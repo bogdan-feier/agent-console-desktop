@@ -5,8 +5,9 @@
 //!
 //! The defaults come from the constants in `config.rs`.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,8 @@ pub const MAX_TURNS_LIMIT: u32 = 500;
 /// Longest "notes for every agent" text, in characters. It is sent with every turn
 /// of every agent (mostly from the cache), so it should stay short.
 pub const MAX_NOTES_LENGTH: usize = 4000;
+/// Longest check command, in characters.
+pub const MAX_CHECK_COMMAND_LENGTH: usize = 300;
 const MAX_MODEL_NAME_LENGTH: usize = 100;
 const MAX_COMMAND_LENGTH: usize = 200;
 const MAX_COMMANDS: usize = 50;
@@ -126,6 +129,21 @@ pub struct Settings {
     /// Added to every agent's instructions, for rules about this project or how you
     /// like to work ("use uv, never pip"). Empty adds nothing.
     pub notes: String,
+
+    // --- Merging and checking ---
+    /// When two workers changed the same lines, let an agent merge their work instead
+    /// of giving up on the round. It only touches the clashing files, and the reviewer
+    /// then checks the result like any other change.
+    pub resolve_conflicts: bool,
+    /// A command the app itself runs on the merged changes before the reviewer sees
+    /// them, such as `cargo test`. Its output goes into the reviewer's prompt, which
+    /// costs no turns. Empty means no check.
+    pub check_command: String,
+
+    /// True when these are one project's own settings rather than the general ones.
+    /// Set when they are handed to the window; never read back from it or saved.
+    #[serde(skip_deserializing)]
+    pub own: bool,
 }
 
 /// The default list of allowed commands: `CHECK_COMMANDS` without the `Bash(...)` around them.
@@ -182,6 +200,9 @@ impl Settings {
             worker_count: WORKER_COUNT,
             chat_max_turns: None,
             notes: String::new(),
+            resolve_conflicts: true,
+            check_command: String::new(),
+            own: false,
         }
     }
 }
@@ -232,6 +253,14 @@ impl Settings {
             return Err(format!("Allow at most {MAX_COMMANDS} commands."));
         }
         self.allowed_commands = commands;
+
+        self.check_command = self.check_command.trim().to_string();
+        if self.check_command.chars().count() > MAX_CHECK_COMMAND_LENGTH {
+            return Err(format!("The check command can be at most {MAX_CHECK_COMMAND_LENGTH} characters."));
+        }
+        if self.check_command.contains(['\n', '\r']) {
+            return Err("The check command must be a single line.".to_string());
+        }
 
         self.notes = self.notes.trim().to_string();
         if self.notes.chars().count() > MAX_NOTES_LENGTH {
@@ -332,9 +361,138 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
     fs::rename(&temporary, path).map_err(problem)
 }
 
+/// Where the settings live: one general set, plus a set of its own for any project
+/// that wants one.
+///
+/// The general set is `settings.json`, the same file older versions wrote. Projects
+/// with their own settings are in `projects.json`, keyed by folder.
+pub struct Store {
+    general_path: PathBuf,
+    projects_path: PathBuf,
+    general: Settings,
+    projects: BTreeMap<String, Settings>,
+}
+
+impl Store {
+    /// Read both files from `folder`. Anything unreadable is replaced by the
+    /// defaults, and said so in the returned messages.
+    pub fn load(folder: &Path) -> (Store, Vec<String>) {
+        let general_path = folder.join("settings.json");
+        let projects_path = folder.join("projects.json");
+        let (general, problem) = load(&general_path);
+        let mut messages: Vec<String> = problem.into_iter().collect();
+        let mut projects: BTreeMap<String, Settings> = match fs::read_to_string(&projects_path) {
+            Err(_) => BTreeMap::new(),
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|problem| {
+                messages.push(format!(
+                    "Ignored the per-project settings in {} ({problem}); every project uses the general set.",
+                    projects_path.display()
+                ));
+                BTreeMap::new()
+            }),
+        };
+        // A project's set is checked like any other: a bad one is dropped, not kept.
+        projects.retain(|_, settings| settings.clone().validated().is_ok());
+        (Store { general_path, projects_path, general, projects }, messages)
+    }
+
+    /// The settings a project should use: its own if it has a set, else the general
+    /// ones. `own` says which it was.
+    pub fn for_project(&self, project_dir: Option<&str>) -> Settings {
+        match project_dir.and_then(|dir| self.projects.get(dir)) {
+            Some(settings) => Settings { own: true, ..settings.clone() },
+            None => Settings { own: false, ..self.general.clone() },
+        }
+    }
+
+    /// Save `settings`, either as this project's own set or as the general one.
+    /// Turning `own` off for a project also removes the set it had.
+    pub fn save(
+        &mut self,
+        project_dir: Option<&str>,
+        settings: Settings,
+        own: bool,
+    ) -> Result<Settings, String> {
+        let settings = Settings { own: false, ..settings.validated()? };
+        match (own, project_dir) {
+            (true, Some(dir)) => {
+                self.projects.insert(dir.to_string(), settings.clone());
+                self.write_projects()?;
+            }
+            (false, dir) => {
+                if dir.is_some_and(|dir| self.projects.remove(dir).is_some()) {
+                    self.write_projects()?;
+                }
+                self.general = settings.clone();
+                save(&self.general_path, &settings)?;
+            }
+            // "Own settings" with no project chosen: nothing to attach them to.
+            (true, None) => return Err("Choose a project before giving it settings of its own.".to_string()),
+        }
+        Ok(Settings { own: own && project_dir.is_some(), ..settings })
+    }
+
+    fn write_projects(&self) -> Result<(), String> {
+        let problem = |error: std::io::Error| format!("Could not save the settings: {error}");
+        if let Some(folder) = self.projects_path.parent() {
+            fs::create_dir_all(folder).map_err(problem)?;
+        }
+        let json = serde_json::to_string_pretty(&self.projects).map_err(|error| error.to_string())?;
+        let temporary = self.projects_path.with_extension("json.tmp");
+        fs::write(&temporary, json).map_err(problem)?;
+        fs::rename(&temporary, &self.projects_path).map_err(problem)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_can_have_settings_of_its_own() {
+        let folder = tempfile::tempdir().unwrap();
+        let (mut store, messages) = Store::load(folder.path());
+        assert!(messages.is_empty());
+        assert!(
+            !store.for_project(Some("/code/app")).own,
+            "without its own set, a project gets the general one"
+        );
+
+        let lean = Settings { notes: "project rule".into(), ..Settings::preset(Preset::Lean) };
+        let saved = store.save(Some("/code/app"), lean, true).unwrap();
+        assert!(saved.own);
+        assert_eq!(store.for_project(Some("/code/app")).notes, "project rule");
+        assert_eq!(store.for_project(Some("/code/other")).notes, "", "other projects are untouched");
+
+        // Reading the files again gives the same answer.
+        let (store, _) = Store::load(folder.path());
+        assert_eq!(store.for_project(Some("/code/app")).notes, "project rule");
+
+        // Turning its own set off puts the project back on the general settings.
+        let (mut store, _) = Store::load(folder.path());
+        let general = Settings { notes: "for everyone".into(), ..Settings::default() };
+        store.save(Some("/code/app"), general, false).unwrap();
+        let settings = store.for_project(Some("/code/app"));
+        assert!(!settings.own);
+        assert_eq!(settings.notes, "for everyone");
+    }
+
+    #[test]
+    fn own_settings_need_a_project() {
+        let folder = tempfile::tempdir().unwrap();
+        let (mut store, _) = Store::load(folder.path());
+        assert!(store.save(None, Settings::default(), true).is_err());
+    }
+
+    #[test]
+    fn the_check_command_is_one_tidy_line() {
+        let mut settings = Settings { check_command: "  cargo test  ".into(), ..Settings::default() };
+        assert_eq!(settings.clone().validated().unwrap().check_command, "cargo test");
+        settings.check_command = "a\nb".into();
+        assert!(settings.clone().validated().is_err());
+        settings.check_command = "x".repeat(MAX_CHECK_COMMAND_LENGTH + 1);
+        assert!(settings.validated().is_err());
+    }
 
     #[test]
     fn defaults_are_the_balanced_preset() {

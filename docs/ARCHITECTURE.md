@@ -23,8 +23,13 @@
 ```
 
 - **`ui/`** draws the window's contents. It knows nothing about agents; it shows events.
+  `app.js` is the only file the page loads; it imports the modules in `ui/parts/` (one per
+  area of the window). Each module imports only from ones listed before it, so the
+  dependencies run one way: `tauri`, `dom`, `words`, `markdown`, `state`, `turns`, `cards`,
+  `controls`, `project`, `decisions`, `changes`, `history`, `settings`, `prompts`, `app`.
 - **`src-tauri/`** is small on purpose. It exposes the commands the page calls, keeps the
-  settings file, and forwards every event from the engine to the window.
+  settings files, saves every run (`store.rs`), and forwards every event from the engine to
+  the window.
 - **`crates/core/`** does the work and has no UI code, so it is tested without a window.
 
 ## What happens when you press "Send"
@@ -54,15 +59,51 @@ you approve a plan (`Orchestrator::build`) and ends with Apply or Discard.
 build:   Workspace::create  -> one worktree per worker + one "review" worktree, from HEAD
          workers in parallel, each with its worktree as its folder
          Workspace::commit_worker after each one (and after each chat with a worker)
-review:  Workspace::merge_into_review -> the reviewer runs in the review worktree
-         its prompt gets the merged diff; a second review gets only the diff since the first
+review:  Workspace::merge_into_review -> on a clash, the resolver (see below)
+         checks::run         -> the project's own command, on the merged result
+         the reviewer runs in the review worktree; its prompt gets the merged diff and the
+         check output; a second review gets only the diff since the first
 apply:   Workspace::apply  -> git merge --squash into your project (staged, not committed)
+         Workspace::commit -> only when you gave a commit message
          Workspace::remove -> worktrees and branches deleted
 ```
 
 All git work is in `worktrees.rs`; nothing else runs git. Most tests and the planner-only
 example use `Isolation::SharedFolder` instead, where everyone works in the project folder and there is
 nothing to merge. `tests/worktree_round.rs` runs a whole round in real worktrees.
+
+## When two workers change the same lines
+
+`merge_into_review` merges one worker branch at a time. If git cannot, it **leaves the merge
+in progress**, with the markers in the files, and returns `Merge::Conflicted`. The
+orchestrator's `merge_all` then has two ways to go:
+
+- Settings says to resolve: the resolver (`config::resolver`) runs in the review worktree
+  with only Read, Edit and Write, and is told which files to mend. Afterwards
+  `Workspace::finish_merge` checks every one of those files for leftover markers **before**
+  staging anything (`git add` would count a file as resolved, markers and all), then commits
+  the merge. The loop tries the whole list again, because git skips branches already in.
+- Anything else (it is turned off, the resolver failed, markers are left): `abort_merge`
+  puts the review worktree back as it was and the user is told which files clashed. Nothing
+  is half-merged, and the project folder was never involved.
+
+The resolver's work is reviewed like any other change, and the user sees every line in the
+Changes window before it reaches the project.
+
+## Checks without an agent
+
+If Settings has a check command, `checks.rs` runs it in the review worktree with a timeout,
+shortens its output from both ends, and puts it in the reviewer's prompt and in a `checks`
+event. The reviewer is told it does not need to run it again, which saves it several turns.
+
+## Saving runs
+
+Every event is written to `runs/<run id>.jsonl` next to the settings, one JSON object per
+line, by the same sink that sends it to the window (`window_sink` in `src-tauri/src/lib.rs`).
+The first line says what the run was. `store.rs` reads these files back for the Runs window,
+skipping any line that does not parse, so a file cut short by a crash still opens. A
+restored run is marked `restored` and every command that would act on it refuses: its agent
+sessions and worktrees belonged to the app that made them.
 
 Claude Code finds a session to resume by folder. Worktree paths stay the same for the
 whole round, so workers and the reviewer can be resumed until the round closes; then
@@ -100,9 +141,12 @@ across rounds; workers and the reviewer only within their round.
 ## Settings
 
 `settings.rs` holds what the Settings window changes: model, effort and turn limit for each role,
-the spending cap, the allowed shell commands, web search, MCP servers, the number of workers and
-the notes for every agent. `config.rs` turns them into each agent's `AgentSpec` (for example, an
+the spending cap, the allowed shell commands, web search, MCP servers, the number of workers,
+whether clashes are resolved, the check command and the notes for every agent. `config.rs` turns them into each agent's `AgentSpec` (for example, an
 allowed command `npm test` becomes the permission rule `Bash(npm test)`). The app loads
+A project can have a set of its own: `settings::Store` keeps the general set in
+`settings.json` (the file older versions wrote) and any project's own in `projects.json`,
+keyed by folder. Choosing a project (`use_project`) loads its set. The app loads
 them at start-up (`setup` in `src-tauri/src/lib.rs`) into a `SharedSettings`, an
 `Arc<RwLock<Settings>>` that every orchestrator holds. The orchestrator reads it each time it
 starts an agent, which is why a change applies to the next agent even mid-run. Saving
@@ -144,8 +188,10 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
 | `crates/core/tests/flow.rs` | The whole flow with scripted agents (`tests/common/scripted.rs`): dispatcher routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
-| `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files |
-| `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes, apply refusing, cleanup |
+| `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files: the resolver merging a clash, failing to, and being turned off; the check command; apply and commit |
+| `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes left open for the resolver, the per-file diff, apply refusing, committing, cleanup |
+| `#[cfg(test)]` in `crates/core/src/checks.rs` | The check command: passing, failing, where it runs, shortening long output |
+| `#[cfg(test)]` in `src-tauri/src/store.rs` | Saved runs: written line by line, read back, a file cut short, the list |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |
 | `#[cfg(test)]` in `crates/core/src/changes.rs` | Diffs from real temporary git repositories |
 

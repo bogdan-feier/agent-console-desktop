@@ -62,8 +62,8 @@ changes (see "Why worktrees" below).
 
 The window has two halves. On the left is the conversation: you, the dispatcher and the
 planner, plus the cards where you approve a plan or act on a review. On the right is the
-team: a card for each worker and one for the reviewer. The strip at the top shows which
-step of the round you are at.
+team: a card for each worker, one for the reviewer, and one for the resolver that only
+appears when it is needed. The strip at the top shows which step of the round you are at.
 
 1. **Message the team.** Choose the project in the top left, type in the box at the bottom of
    the conversation and press **Send** (or Cmd+Enter). With **Ask** selected, the dispatcher
@@ -78,18 +78,32 @@ step of the round you are at.
 4. **Approve.** This is where work starts. Each worker gets its own copy of the project (a
    git worktree) and builds its task there. Your project folder is not touched.
 5. **Review.** When the workers finish, their work is merged together and the reviewer
-   checks all of it at once, running the tests on the combined result. Each problem it finds
-   names the task it belongs to.
+   checks all of it at once. Each problem it finds names the task it belongs to.
+   Two things happen before it looks:
+   - If two workers changed the same lines, git cannot merge them. The **resolver** then
+     writes a version with both changes in it, touching only the clashing files. If it
+     cannot, the merge is undone and you are told which files clashed; nothing is lost.
+   - If you set a **check command** in Settings, the app runs it on the merged result and
+     gives the output to the reviewer. That costs no tokens and saves the reviewer the turns.
 6. **Fix (optional).** "Send back to Worker N" gives that worker the problems in its task;
    the reviewer then checks again, looking only at what changed. You can also message any
    worker or the reviewer directly, then press **Review again**.
-7. **Apply or discard.** **Apply to project** puts the result into your project as staged
-   changes: look at them with `git diff --staged` and commit them yourself. **Discard**
+7. **Apply or discard.** **See changes and apply** opens the round's changes file by file,
+   with the lines each worker added and removed. From there, **Apply only** puts them into
+   your project as staged changes for you to commit, and **Apply and commit** also makes the
+   commit, with the message in the box (the plan's summary, which you can edit). **Discard**
    throws the round away. Either way the worktrees are deleted, and you can start the next
    round in the same run: the dispatcher and the planner remember the conversation.
 
 **Stop** ends whatever is running and kills the `claude` processes it started. **New run**
 starts over with fresh agents (apply or discard the open round first).
+
+Every run is saved as it happens. **Runs** in the top bar lists them all with what each one
+used, and opens any of them again. A run from an earlier launch opens read only: its agents'
+sessions and worktrees went with the app that made them.
+
+Prompts you type often can be kept: the **Save this prompt** chip above the message box
+keeps what you typed, and the chips put it back.
 
 ## Why worktrees
 
@@ -113,7 +127,9 @@ temporary folder, not in your project.
 
 ## Settings
 
-The Settings window has four sections.
+The Settings window has four sections. At the top, **Keep separate settings for this
+project** decides what saving changes: with it off, the general settings every project
+starts from; with it on, this project's own set, which overrides them.
 
 **Models and limits.** **Start from** fills this section in with one of three presets
 (the other sections stay as they are):
@@ -152,8 +168,11 @@ refused. You choose:
 Only workers can ever edit files, and only in their own copy of the project; that is not a
 setting.
 
-**Team.** The most workers one plan may use, from 1 to 3. Fewer means smaller plans and less
-usage.
+**Team and checks.** The most workers one plan may use, from 1 to 3; fewer means smaller
+plans and less usage. Whether an agent should merge two workers' changes when they clash
+(on by default). And a command the app runs itself on the merged changes before the reviewer
+sees them, such as `cargo test`: its output goes to the reviewer, which costs nothing and
+saves it the turns.
 
 **Notes for every agent.** Text added to every agent's instructions, for rules about the
 project or how you like to work ("Use uv, never pip"). It is sent on every turn, mostly from
@@ -230,8 +249,11 @@ that.
 | The order agents run in | `crates/core/src/orchestrator.rs` |
 | How worktrees are created, merged, applied and removed | `crates/core/src/worktrees.rs` |
 | How `claude` is started, or how its output is read | `crates/core/src/claude/` |
+| How clashes between workers are merged | `crates/core/src/worktrees.rs`, `resolve` in `orchestrator.rs` |
+| How the project's own checks are run | `crates/core/src/checks.rs` |
+| How runs are saved and listed | `src-tauri/src/store.rs` |
 | What the page looks like | `ui/styles.css`, `ui/index.html` |
-| What the page does | `ui/app.js` |
+| What the page does | `ui/app.js` and the modules in `ui/parts/` |
 | Window size, app name, icon | `src-tauri/tauri.conf.json`, `assets/app-icon.png` |
 
 `docs/ARCHITECTURE.md` explains how the parts fit together, with notes for someone coming
@@ -270,5 +292,5 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 | "Stopped at this agent's turn limit" | Send the agent a message such as "continue" to let it finish, or raise its limit in `config.rs`. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |
 | "Claude could not sign in" in the conversation | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
-| A tool line says "Refused or failed" | The command is not on the allow list. Add it in Settings, under Permissions, or to the project's `.claude/settings.json`. |
+| A tool line says "Refused or failed" | The command is not on the allow list. The step offers an **Allow** button that adds a rule for commands like it and asks the agent to try again; you can also add it in Settings, under Permissions, or to the project's `.claude/settings.json`. |
 | Want to see the raw events without the app | `cargo run -p agent-console-core --example plan -- <folder> "<request>"` |

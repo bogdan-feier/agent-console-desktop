@@ -7,6 +7,8 @@
 //! then starts the work in the background and returns. Nothing in here knows how
 //! agents work; that is all in the core crate.
 
+mod store;
+
 use std::collections::HashMap;
 use std::env;
 use std::future::Future;
@@ -20,14 +22,15 @@ use agent_console_core::orchestrator::{
 };
 use agent_console_core::run::EventSink;
 use agent_console_core::settings::{self, Preset, Settings, SharedSettings};
+use agent_console_core::worktrees::FileChange;
 use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run};
 use serde::{Deserialize, Serialize};
+use store::{RunStore, RunSummary};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{oneshot, OnceCell};
 
 const RUN_EVENT: &str = "run-event";
-const SETTINGS_FILE: &str = "settings.json";
 
 /// Commands return `Err(String)` for anything the user should read.
 type CommandResult<T> = Result<T, String>;
@@ -43,20 +46,33 @@ struct AppState {
     runs: Mutex<HashMap<String, ActiveRun>>,
     /// Finding `claude` starts a shell, so it is done once, on first use.
     claude: OnceCell<Result<Arc<ClaudeRunner>, String>>,
-    /// The current settings, shared with every orchestrator.
+    /// The settings in use right now, shared with every orchestrator. They are the
+    /// chosen project's own set if it has one, else the general set.
     settings: SharedSettings,
-    /// Where the settings are saved: the app's folder in ~/Library/Application Support.
-    settings_path: PathBuf,
+    /// Every set of settings on disk: the general one and any project's own.
+    saved_settings: Mutex<settings::Store>,
+    /// Every run, saved as it happens.
+    runs_on_disk: Arc<RunStore>,
 }
 
 impl AppState {
-    fn new(settings: Settings, settings_path: PathBuf) -> Self {
+    fn new(saved_settings: settings::Store, runs_on_disk: Arc<RunStore>) -> Self {
         AppState {
             runs: Mutex::new(HashMap::new()),
             claude: OnceCell::new(),
-            settings: settings::shared(settings),
-            settings_path,
+            settings: settings::shared(saved_settings.for_project(None)),
+            saved_settings: Mutex::new(saved_settings),
+            runs_on_disk,
         }
+    }
+
+    fn saved_settings(&self) -> std::sync::MutexGuard<'_, settings::Store> {
+        self.saved_settings.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Use these settings from now on, for every agent that starts next.
+    fn apply_settings(&self, settings: &Settings) {
+        *self.settings.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
     }
 
     fn runs(&self) -> std::sync::MutexGuard<'_, HashMap<String, ActiveRun>> {
@@ -67,6 +83,18 @@ impl AppState {
         let runs = self.runs();
         let active = runs.get(run_id).ok_or("That run no longer exists. Start a new one.")?;
         Ok((active.run.clone(), active.orchestrator.clone()))
+    }
+
+    /// Find a run that can still be worked on. A run read back from disk cannot:
+    /// its agents' sessions and its worktrees went with the app that made them.
+    fn find_live(&self, run_id: &str) -> CommandResult<(Arc<Run>, Orchestrator)> {
+        let found = self.find(run_id)?;
+        if found.0.restored {
+            return Err("This run was loaded from an earlier launch, so it can be read but not \
+                        continued. Start a new run to carry on."
+                .to_string());
+        }
+        Ok(found)
     }
 
     async fn claude_runner(&self) -> CommandResult<Arc<ClaudeRunner>> {
@@ -124,6 +152,14 @@ struct Limits {
     max_notes: usize,
 }
 
+/// What the Changes window shows.
+#[derive(Serialize)]
+struct RoundChanges {
+    files: Vec<FileChange>,
+    /// The commit message offered in the window, from what the plan set out to do.
+    suggested_message: String,
+}
+
 /// What the page receives for every event: which run it belongs to, and the event.
 #[derive(Clone, Serialize)]
 struct RunEvent<'a> {
@@ -172,13 +208,27 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
-/// Check, save and apply new settings. Returns them tidied (model names trimmed).
+/// Switch to a project: from now on its own settings are used, if it has a set.
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: Settings) -> CommandResult<Settings> {
-    let settings = settings.validated()?;
-    settings::save(&state.settings_path, &settings)?;
-    *state.settings.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
-    Ok(settings)
+fn use_project(state: State<'_, AppState>, project_dir: String) -> Settings {
+    let settings = state.saved_settings().for_project(Some(project_dir.trim()));
+    state.apply_settings(&settings);
+    settings
+}
+
+/// Check, save and apply new settings, either for one project or for all of them.
+/// Returns them tidied (model names trimmed, empty command lines dropped).
+#[tauri::command]
+fn save_settings(
+    state: State<'_, AppState>,
+    settings: Settings,
+    project_dir: Option<String>,
+    own_settings: bool,
+) -> CommandResult<Settings> {
+    let project_dir = project_dir.map(|dir| dir.trim().to_string()).filter(|dir| !dir.is_empty());
+    let saved = state.saved_settings().save(project_dir.as_deref(), settings, own_settings)?;
+    state.apply_settings(&saved);
+    Ok(saved)
 }
 
 /// Show the native "choose a folder" dialog.
@@ -214,12 +264,11 @@ async fn start_run(
     let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
     let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);
 
-    // Every event of this run is forwarded to the window.
-    let sink: EventSink = Arc::new(move |run_id: &str, event: &Event| {
-        let _ = app.emit(RUN_EVENT, RunEvent { run_id, event });
-    });
+    // Every event of this run goes to the window and into the run's own file.
+    let sink = window_sink(app, Some(state.runs_on_disk.clone()));
     let run = Run::new(project_dir, message.trim(), sink);
     can_message(&run, &message)?;
+    state.runs_on_disk.start(&run);
 
     let mut runs = state.runs();
     // One run at a time: stop whatever was still going.
@@ -236,7 +285,7 @@ async fn start_run(
 /// Send a message from the main message box to an existing run.
 #[tauri::command]
 fn send(state: State<'_, AppState>, run_id: String, message: String, mode: SendMode) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_message(&run, &message)?;
     dispatch(run, orchestrator, message, mode);
     Ok(())
@@ -268,7 +317,7 @@ fn send_message(
     agent: String,
     message: String,
 ) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_chat(&run, &agent, &message)?;
     let message = message.trim().to_string();
     let task_run = run.clone();
@@ -279,7 +328,7 @@ fn send_message(
 /// Ask the planner for a plan from the conversation so far, with optional extra text.
 #[tauri::command]
 fn make_plan(state: State<'_, AppState>, run_id: String, guidance: Option<String>) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     if !run.is_at_rest() {
         return Err("Wait until the agents have finished.".to_string());
     }
@@ -290,7 +339,7 @@ fn make_plan(state: State<'_, AppState>, run_id: String, guidance: Option<String
 
 #[tauri::command]
 fn approve_plan(state: State<'_, AppState>, run_id: String, tasks: Vec<Task>) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_approve(&run)?;
     let tasks: Vec<Task> = tasks.into_iter().filter(|task| !task.title.trim().is_empty()).collect();
     if tasks.is_empty() {
@@ -304,7 +353,7 @@ fn approve_plan(state: State<'_, AppState>, run_id: String, tasks: Vec<Task>) ->
 /// Give worker `worker` the reviewer's findings for its task.
 #[tauri::command]
 fn send_back(state: State<'_, AppState>, run_id: String, worker: usize) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_send_back(&run, worker)?;
     let task_run = run.clone();
     spawn_phase(run, async move { orchestrator.send_back(&task_run, worker).await });
@@ -313,25 +362,63 @@ fn send_back(state: State<'_, AppState>, run_id: String, worker: usize) -> Comma
 
 #[tauri::command]
 fn review_again(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let task_run = run.clone();
     spawn_phase(run, async move { orchestrator.review(&task_run).await });
     Ok(())
 }
 
+/// Every file the open round would change, for the Changes window.
 #[tauri::command]
-fn apply_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+async fn round_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<RoundChanges> {
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
+    let files = orchestrator.round_changes(&run).await?;
+    let summary = run.plan_summary();
+    let suggested_message = if summary.trim().is_empty() { run.request.clone() } else { summary };
+    Ok(RoundChanges { files, suggested_message: first_line(&suggested_message) })
+}
+
+/// Apply the round's changes. With a message, they are committed too; without
+/// one, they are left staged for you to commit yourself.
+#[tauri::command]
+fn apply_changes(
+    state: State<'_, AppState>,
+    run_id: String,
+    commit_message: Option<String>,
+) -> CommandResult<()> {
+    let (run, orchestrator) = state.find_live(&run_id)?;
+    can_finish_round(&run)?;
+    let message = commit_message.map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.apply(&task_run).await });
+    spawn_phase(run, async move { orchestrator.apply(&task_run, message.as_deref()).await });
+    Ok(())
+}
+
+/// Every run this app has saved, newest first.
+#[tauri::command]
+fn recent_runs(state: State<'_, AppState>) -> Vec<RunSummary> {
+    state.runs_on_disk.list()
+}
+
+/// Load a saved run so the window can show it again. It cannot be continued.
+#[tauri::command]
+async fn open_run(app: AppHandle, state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
+    if state.runs().contains_key(&run_id) {
+        return Ok(());
+    }
+    let (head, events) = state.runs_on_disk.read(&run_id)?;
+    let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
+    let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);
+    let run = Run::restored(head.id, &head.project_dir, head.request, events, window_sink(app, None));
+    state.runs().insert(run.id.clone(), ActiveRun { run, orchestrator });
     Ok(())
 }
 
 #[tauri::command]
 fn discard_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
-    let (run, orchestrator) = state.find(&run_id)?;
+    let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let task_run = run.clone();
     spawn_phase(run, async move { orchestrator.discard(&task_run).await });
@@ -340,8 +427,24 @@ fn discard_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<
 
 #[tauri::command]
 fn stop_run(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
-    state.find(&run_id)?.0.stop();
+    state.find_live(&run_id)?.0.stop();
     Ok(())
+}
+
+/// Keep only the first line, and not too much of it: a commit message's first
+/// line is its subject.
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().chars().take(72).collect::<String>().trim().to_string()
+}
+
+/// Forward every event of a run to the window, and save it when there is a store.
+fn window_sink(app: AppHandle, store: Option<Arc<RunStore>>) -> EventSink {
+    Arc::new(move |run_id: &str, event: &Event| {
+        if let Some(store) = &store {
+            store.append(run_id, event);
+        }
+        let _ = app.emit(RUN_EVENT, RunEvent { run_id, event });
+    })
 }
 
 /// Do one phase in the background so the command can return right away.
@@ -366,18 +469,21 @@ fn expand_home(path: &str) -> PathBuf {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // ~/Library/Application Support/<identifier>/settings.json on macOS.
-            let settings_path = app.path().app_config_dir()?.join(SETTINGS_FILE);
-            let (settings, problem) = settings::load(&settings_path);
-            if let Some(problem) = problem {
+            // ~/Library/Application Support/<identifier> on macOS: settings.json,
+            // projects.json, and one file per run under runs/.
+            let folder = app.path().app_config_dir()?;
+            let (saved_settings, problems) = settings::Store::load(&folder);
+            for problem in problems {
                 eprintln!("{problem}");
             }
-            app.manage(AppState::new(settings, settings_path));
+            app.manage(AppState::new(saved_settings, Arc::new(RunStore::new(&folder))));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            use_project,
             save_settings,
             pick_folder,
             start_run,
@@ -388,9 +494,12 @@ pub fn run() {
             approve_plan,
             send_back,
             review_again,
+            round_changes,
             apply_changes,
             discard_changes,
-            stop_run
+            stop_run,
+            recent_runs,
+            open_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agent Console");

@@ -60,7 +60,7 @@ impl AgentRunner for WritingRunner {
             Role::Reviewer => {
                 Some(json!({ "verdict": "approve", "summary": "Good.", "must_fix": [], "consider": [] }))
             }
-            Role::Dispatcher => None,
+            Role::Dispatcher | Role::Resolver => None,
         };
         let _ = run;
         Ok(AgentOutput {
@@ -130,7 +130,7 @@ async fn workers_build_in_their_own_worktrees_and_apply_stages_the_result() {
     assert!(second_review.contains("+value = 'fixed'"), "{second_review}");
     assert!(!second_review.contains("file2.py"), "only the change since the first review");
 
-    supervised(run.clone(), orchestrator.apply(&run)).await;
+    supervised(run.clone(), orchestrator.apply(&run, None)).await;
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(fs::read_to_string(project.path().join("file1.py")).unwrap(), "value = 'fixed'\n");
     let status = git(project.path(), &["status", "--porcelain"]);
@@ -174,4 +174,162 @@ async fn discarding_removes_the_worktrees_and_leaves_the_project_alone() {
     assert!(git(project.path(), &["status", "--porcelain"]).is_empty());
     assert_eq!(git(project.path(), &["worktree", "list"]).lines().count(), 1);
     assert!(git(project.path(), &["branch", "--list", "agent-console/*"]).trim().is_empty());
+}
+
+/// Both workers edit the same lines of the same file, which git cannot merge.
+/// The resolver writes a version with both changes in it.
+struct ClashingRunner {
+    /// (agent, folder it ran in), for every session.
+    sessions: Mutex<Vec<(String, String)>>,
+    /// What the resolver writes; `None` means it leaves the markers alone.
+    resolution: Option<&'static str>,
+}
+
+impl ClashingRunner {
+    fn new(resolution: Option<&'static str>) -> Arc<ClashingRunner> {
+        Arc::new(ClashingRunner { sessions: Mutex::new(Vec::new()), resolution })
+    }
+
+    fn ran(&self, agent: &str) -> bool {
+        self.sessions.lock().unwrap().iter().any(|(id, _)| id == agent)
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentRunner for ClashingRunner {
+    async fn run_session(
+        &self,
+        _run: &Run,
+        spec: &AgentSpec,
+        _prompt: &str,
+        _resume: Option<&str>,
+        folder: &Path,
+    ) -> Result<AgentOutput, AgentError> {
+        self.sessions.lock().unwrap().push((spec.id.clone(), folder.display().to_string()));
+        let structured = match spec.role {
+            Role::Planner => Some(json!({
+                "summary": "Both tasks touch shared.py.",
+                "tasks": [
+                    { "title": "One", "instructions": "Edit shared.py", "files": ["shared.py"] },
+                    { "title": "Two", "instructions": "Edit shared.py too", "files": ["shared.py"] }
+                ]
+            })),
+            Role::Worker => {
+                let number = spec.id.trim_start_matches("worker-");
+                fs::write(folder.join("shared.py"), format!("value = {number}\n")).unwrap();
+                None
+            }
+            Role::Resolver => {
+                if let Some(text) = self.resolution {
+                    fs::write(folder.join("shared.py"), text).unwrap();
+                }
+                None
+            }
+            Role::Reviewer => Some(
+                json!({ "verdict": "approve", "summary": "Both are in.", "must_fix": [], "consider": [] }),
+            ),
+            Role::Dispatcher => None,
+        };
+        Ok(AgentOutput {
+            text: format!("{} done", spec.id),
+            structured,
+            session_id: Some(format!("s-{}", spec.id)),
+        })
+    }
+}
+
+fn clashing_orchestrator(runner: Arc<ClashingRunner>, resolve: bool) -> Orchestrator {
+    let settings = Settings { resolve_conflicts: resolve, ..Settings::default() };
+    Orchestrator::new(runner, settings::shared(settings), Isolation::Worktrees)
+}
+
+#[tokio::test]
+async fn the_resolver_merges_two_workers_changes_to_the_same_lines() {
+    let project = project();
+    let runner = ClashingRunner::new(Some("value = 1\nalso = 2\n"));
+    let orchestrator = clashing_orchestrator(runner.clone(), true);
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    assert_eq!(run.state(), RunState::Done);
+
+    // It worked where everything is merged together, not in a worker's folder.
+    let sessions = runner.sessions.lock().unwrap().clone();
+    let (_, resolver_folder) = sessions.iter().find(|(id, _)| id == "resolver").expect("the resolver ran");
+    let (_, reviewer_folder) = sessions.iter().find(|(id, _)| id == "reviewer").expect("the reviewer ran");
+    assert_eq!(resolver_folder, reviewer_folder);
+
+    // The round carried on: the reviewer saw the merged file and approved it.
+    assert!(collected.of_type("review").iter().any(|event| event["verdict"] == "approve"));
+
+    supervised(run.clone(), orchestrator.apply(&run, Some("both changes"))).await;
+    assert_eq!(run.state(), RunState::Ready);
+    assert_eq!(fs::read_to_string(project.path().join("shared.py")).unwrap(), "value = 1\nalso = 2\n");
+    let log = git(project.path(), &["log", "--oneline"]);
+    assert_eq!(log.lines().count(), 2, "applying with a message commits it: {log}");
+    assert!(log.contains("both changes"));
+}
+
+#[tokio::test]
+async fn a_resolver_that_leaves_the_markers_in_place_changes_nothing() {
+    let project = project();
+    let runner = ClashingRunner::new(None);
+    let orchestrator = clashing_orchestrator(runner.clone(), true);
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+
+    // The round is still yours to decide about, and nothing half-merged was kept.
+    assert_eq!(run.state(), RunState::Done);
+    assert!(runner.ran("resolver"));
+    assert!(!runner.ran("reviewer"), "there was nothing whole to review");
+    let problems = collected.of_type("error");
+    assert!(problems.iter().any(|event| event["message"].as_str().unwrap().contains("shared.py")));
+    assert!(!project.path().join("shared.py").exists(), "the project was not touched");
+}
+
+#[tokio::test]
+async fn without_the_resolver_a_clash_just_stops_the_round() {
+    let project = project();
+    let runner = ClashingRunner::new(Some("never used"));
+    let orchestrator = clashing_orchestrator(runner.clone(), false);
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+
+    assert_eq!(run.state(), RunState::Done);
+    assert!(!runner.ran("resolver"), "it is turned off");
+    let problems = collected.of_type("error");
+    assert!(problems
+        .iter()
+        .any(|event| event["message"].as_str().unwrap().contains("turned off in Settings")));
+}
+
+#[tokio::test]
+async fn the_apps_own_check_runs_on_the_merged_work_and_the_reviewer_is_told() {
+    let project = project();
+    let runner = Arc::new(WritingRunner::default());
+    let settings = Settings { check_command: "echo checked-ok".into(), ..Settings::default() };
+    let orchestrator = Orchestrator::new(runner.clone(), settings::shared(settings), Isolation::Worktrees);
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+
+    let checks = collected.of_type("checks");
+    assert_eq!(checks.len(), 1, "once per review");
+    assert_eq!(checks[0]["passed"], true);
+    assert_eq!(checks[0]["command"], "echo checked-ok");
+    assert!(checks[0]["output"].as_str().unwrap().contains("checked-ok"));
+
+    let review_prompt = runner.sessions.lock().unwrap()[3].2.clone();
+    assert!(review_prompt.contains("checked-ok"), "the reviewer does not have to run it again");
+    assert!(review_prompt.contains("passed"), "{review_prompt}");
 }

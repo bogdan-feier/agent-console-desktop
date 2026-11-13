@@ -15,6 +15,7 @@
 //! engine separate means it can be tested without opening a window.
 
 pub mod changes;
+pub mod checks;
 pub mod claude;
 pub mod config;
 pub mod event;

@@ -21,14 +21,16 @@ use futures::future::join_all;
 use serde::de::DeserializeOwned;
 
 use crate::changes::{self, Changes};
+use crate::checks::{self, Checked};
 use crate::config::{
-    self, Plan, Review, Route, Routing, Task, DISPATCHER_ID, PLANNER_ID, REVIEWER_ID, WORKER_COUNT,
+    self, Plan, Review, Route, Routing, Task, DISPATCHER_ID, PLANNER_ID, RESOLVER_ID, REVIEWER_ID,
+    WORKER_COUNT,
 };
 use crate::event::EventKind;
 use crate::run::{Run, RunState};
 use crate::runner::{run_agent, AgentError, AgentOutput, AgentRunner};
 use crate::settings::{self, Settings, SharedSettings};
-use crate::worktrees::Workspace;
+use crate::worktrees::{FileChange, Merge, Workspace};
 
 /// Start of the prompt a worker gets when the reviewer sends its work back.
 pub const FIX_PROMPT_MARKER: &str = "The reviewer asked for changes to your task.";
@@ -146,6 +148,7 @@ impl Orchestrator {
             return Err(report(run, PLANNER_ID, "The planner returned no tasks."));
         }
         run.set_tasks(plan.tasks.clone());
+        run.set_plan_summary(plan.summary.clone());
         run.emit(Some(PLANNER_ID), EventKind::Plan { summary: plan.summary, tasks: plan.tasks });
         run.set_state(RunState::AwaitingApproval);
         Ok(())
@@ -206,13 +209,15 @@ impl Orchestrator {
         // changes made since then.
         let session = run.session(REVIEWER_ID);
         let since = session.as_ref().and_then(|_| run.last_reviewed());
+        let mut checked = None;
         let (changes, reviewed_commit) = match run.workspace() {
             Some(workspace) => {
-                if let Err(problem) = workspace.merge_into_review(&finished).await {
+                if let Err(problem) = self.merge_all(run, &workspace, &finished).await {
                     run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem });
                     run.set_state(RunState::Done);
                     return Ok(());
                 }
+                checked = self.run_checks(run, workspace.review_dir()).await;
                 (workspace.review_changes(since.as_deref()).await, workspace.review_commit().await.ok())
             }
             None => {
@@ -226,7 +231,7 @@ impl Orchestrator {
         let prompt = match session {
             Some(_) => re_review_prompt(&reports, &changes),
             None => review_prompt(&run.tasks(), &reports, &changes),
-        };
+        } + &checks_text(checked.as_ref());
         if let Ok(output) = run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await {
             if let Ok(review) = structured_answer::<Review>(run, REVIEWER_ID, &output) {
                 run.record_review(review.clone(), reviewed_commit);
@@ -254,7 +259,7 @@ impl Orchestrator {
 
     /// Bring the round's changes into the project as staged changes, and close the
     /// round. If that is not possible, the round stays open and the reason is shown.
-    pub async fn apply(&self, run: &Run) -> Result<(), AgentError> {
+    pub async fn apply(&self, run: &Run, commit_message: Option<&str>) -> Result<(), AgentError> {
         let Some(workspace) = run.workspace() else {
             let text = "Round closed. Without worktrees the agents work in the project folder \
                         itself, so there was nothing to bring over."
@@ -266,11 +271,20 @@ impl Orchestrator {
         };
         match workspace.apply().await {
             Ok(files) => {
-                let text = format!(
-                    "Applied: {} file(s) are now staged in your project. Look them over with \
-                     `git diff --staged`, then commit them.",
-                    files.len()
-                );
+                let count = files.len();
+                let text = match commit_message {
+                    None => format!(
+                        "Applied: {count} file(s) are now staged in your project. Look them over with \
+                         `git diff --staged`, then commit them."
+                    ),
+                    Some(message) => match workspace.commit(message).await {
+                        Ok(()) => format!("Applied and committed {count} file(s) to your project."),
+                        Err(problem) => format!(
+                            "Applied: {count} file(s) are staged in your project, but the commit did not \
+                             go through ({problem}). Commit them yourself when you have fixed that."
+                        ),
+                    },
+                };
                 run.emit(Some(REVIEWER_ID), EventKind::Notice { text });
                 workspace.remove().await;
                 run.close_round();
@@ -279,6 +293,15 @@ impl Orchestrator {
             Err(problem) => run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem }),
         }
         Ok(())
+    }
+
+    /// Every file the open round would change, for the window that shows them
+    /// before they are applied.
+    pub async fn round_changes(&self, run: &Run) -> Result<Vec<FileChange>, String> {
+        match run.workspace() {
+            Some(workspace) => workspace.file_changes().await,
+            None => Err("This round has no separate copy of the project to compare.".to_string()),
+        }
     }
 
     /// Throw the round's changes away: delete its worktrees and branches.
@@ -293,6 +316,87 @@ impl Orchestrator {
     }
 
     // --- Helpers --------------------------------------------------------------------------
+
+    /// Merge every finished worker's branch into the review worktree, asking the
+    /// resolver to step in when two workers changed the same lines.
+    ///
+    /// `merge_into_review` skips branches that are already in, so after a clash is
+    /// resolved we simply try the whole list again. Each round of the loop ends one
+    /// clash, and there cannot be more clashes than there are branches.
+    async fn merge_all(&self, run: &Run, workspace: &Workspace, finished: &[usize]) -> Result<(), String> {
+        for _ in 0..=finished.len() {
+            match workspace.merge_into_review(finished).await? {
+                Merge::Clean => return Ok(()),
+                Merge::Conflicted { worker, files } => {
+                    if !self.settings().resolve_conflicts {
+                        workspace.abort_merge().await;
+                        return Err(clash_message(worker, &files, "it is turned off in Settings"));
+                    }
+                    self.resolve(run, workspace, worker, &files).await?;
+                }
+            }
+        }
+        Err("The workers' changes kept clashing, so the round was left as it was.".to_string())
+    }
+
+    /// Let the resolver make one clash whole again. The merge is in progress while
+    /// this runs: it either ends in a commit or is undone completely.
+    async fn resolve(
+        &self,
+        run: &Run,
+        workspace: &Workspace,
+        worker: usize,
+        files: &[String],
+    ) -> Result<(), String> {
+        let text = format!(
+            "Worker {worker} changed the same lines as another worker in {}. Merging the two versions.",
+            files.join(", ")
+        );
+        run.emit(Some(RESOLVER_ID), EventKind::Notice { text });
+
+        let spec = config::resolver(&self.settings());
+        let prompt = resolve_prompt(files);
+        let outcome = run_agent(self.runner.as_ref(), run, &spec, &prompt, None).await;
+        if outcome.is_err() {
+            workspace.abort_merge().await;
+            return Err(clash_message(worker, files, "the resolver could not finish"));
+        }
+        match workspace.finish_merge(worker, files, "resolved by the resolver").await {
+            Ok(()) => {
+                let text = format!(
+                    "Merged the two versions of {}. The reviewer checks the result next, and you see \
+                     every line before it reaches your project.",
+                    files.join(", ")
+                );
+                run.emit(Some(RESOLVER_ID), EventKind::Notice { text });
+                Ok(())
+            }
+            Err(problem) => {
+                workspace.abort_merge().await;
+                Err(clash_message(worker, files, &problem))
+            }
+        }
+    }
+
+    /// Run the project's own check command on the merged changes, if there is one.
+    /// The reviewer is given the output, which saves it the turns.
+    async fn run_checks(&self, run: &Run, dir: std::path::PathBuf) -> Option<Checked> {
+        let command = self.settings().check_command;
+        if command.trim().is_empty() {
+            return None;
+        }
+        let checked = checks::run(&dir, &command).await;
+        run.emit(
+            None,
+            EventKind::Checks {
+                command: checked.command.clone(),
+                passed: checked.passed,
+                note: checked.note.clone(),
+                output: checked.output.clone(),
+            },
+        );
+        Some(checked)
+    }
 
     /// Wait before starting the `position`-th of several parallel agents (counting from 1).
     async fn start_after(&self, position: usize) {
@@ -535,6 +639,40 @@ fn re_review_prompt(reports: &str, changes: &Changes) -> String {
          findings are fixed and that nothing else broke, and give a complete verdict for all tasks.\n\n\
          Their latest reports:\n\n{reports}\n\nWhat changed since your last review:\n\n{}",
         changes_text(changes)
+    )
+}
+
+/// What the resolver is told. The files are already in its folder with git's
+/// markers in them, so it only needs to know which ones.
+fn resolve_prompt(files: &[String]) -> String {
+    let list = files.iter().map(|path| format!("- {path}")).collect::<Vec<_>>().join("\n");
+    format!(
+        "Two workers changed the same lines. These files are in your folder with git's conflict \
+         markers in them:\n\n{list}\n\nResolve every marker so that both workers' work survives, and \
+         change nothing else. Then report what each side wanted and what you did."
+    )
+}
+
+/// What the user is told when a clash could not be merged.
+fn clash_message(worker: usize, files: &[String], why: &str) -> String {
+    format!(
+        "Worker {worker}'s changes clash with another worker's in {}, and they were not merged \
+         ({why}). Nothing was lost: send one worker back to undo its change there, or discard the \
+         round and plan again with tasks that do not share files.",
+        files.join(", ")
+    )
+}
+
+/// The check output, for the end of the reviewer's prompt.
+fn checks_text(checked: Option<&Checked>) -> String {
+    let Some(checked) = checked else { return String::new() };
+    let verdict = if checked.passed { "passed" } else { "FAILED" };
+    format!(
+        "\n\nThe project's own check `{}` was run on these changes and {verdict} ({}). You do not \
+         need to run it again. Its output:\n\n{}",
+        checked.command,
+        checked.note,
+        if checked.output.trim().is_empty() { "(nothing printed)" } else { &checked.output }
     )
 }
 

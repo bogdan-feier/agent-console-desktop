@@ -115,6 +115,9 @@ impl AgentRunner for ClaudeRunner {
         let mut lines = BufReader::new(stdout).lines();
         let mut final_line: Option<ResultLine> = None;
         let mut auth_failed = false;
+        // The last shell command the agent tried, so that if the next thing we see
+        // is a refusal we can offer to allow it.
+        let mut last_command: Option<String> = None;
 
         while let Ok(Some(line)) = lines.next_line().await {
             match parse_line(&line) {
@@ -130,6 +133,10 @@ impl AgentRunner for ClaudeRunner {
                             }
                             Block::ToolUse { name, input } if name != STRUCTURED_OUTPUT_TOOL => {
                                 let detail = describe_tool_call(&name, &input);
+                                if name == "Bash" {
+                                    last_command =
+                                        input.get("command").and_then(Value::as_str).map(str::to_string);
+                                }
                                 run.emit(Some(agent), EventKind::Tool { name, detail });
                             }
                             _ => {}
@@ -139,8 +146,12 @@ impl AgentRunner for ClaudeRunner {
                 Some(Line::User { message }) => {
                     for block in message.blocks() {
                         if let Block::ToolResult { content, is_error: Some(true) } = block {
-                            let detail = shorten(&tool_result_text(&content));
-                            run.emit(Some(agent), EventKind::ToolError { detail });
+                            let text = tool_result_text(&content);
+                            let allow_rule = refused_command(&text, last_command.as_deref());
+                            run.emit(
+                                Some(agent),
+                                EventKind::ToolError { detail: shorten(&text), allow_rule },
+                            );
                         }
                     }
                 }
@@ -234,6 +245,44 @@ fn describe_tool_call(name: &str, input: &Value) -> String {
     shorten(input.get(field).and_then(Value::as_str).unwrap_or_default())
 }
 
+/// When a shell command was refused for want of permission, the rule that would
+/// allow commands like it. `None` when the command simply failed: that is the
+/// project's problem, not a permission to grant.
+fn refused_command(result_text: &str, command: Option<&str>) -> Option<String> {
+    let said = result_text.to_lowercase();
+    let refused = said.contains("permission")
+        || said.contains("not allowed")
+        || said.contains("haven't granted")
+        || said.contains("has not been granted");
+    if !refused {
+        return None;
+    }
+    allow_rule(command?)
+}
+
+/// "npm run lint --fix" -> "npm run *", "pytest -q" -> "pytest *".
+///
+/// The program, plus its first word if that word is a subcommand rather than an
+/// option, and then anything. Narrow enough to be worth seeing before you agree
+/// to it, wide enough to be worth agreeing to.
+fn allow_rule(command: &str) -> Option<String> {
+    let mut words = command.split_whitespace();
+    let program = words.next()?;
+    let mut rule = program.to_string();
+    if let Some(second) = words.next() {
+        if !second.starts_with('-') {
+            rule.push(' ');
+            rule.push_str(second);
+        }
+    }
+    // The rule becomes `Bash(<rule>)` in a comma-separated list, so these would
+    // break it. A command with them in its name is left for the Settings window.
+    if rule.contains([',', '(', ')']) {
+        return None;
+    }
+    Some(rule + " *")
+}
+
 fn shorten(text: &str) -> String {
     text.chars().take(DETAIL_LIMIT).collect()
 }
@@ -242,6 +291,20 @@ fn shorten(text: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_refused_command_can_be_offered_as_a_rule() {
+        let refused = "Claude requested permissions to use Bash, but you have not granted it yet.";
+        assert_eq!(refused_command(refused, Some("npm run lint --fix")), Some("npm run *".to_string()));
+        assert_eq!(refused_command(refused, Some("pytest -q")), Some("pytest *".to_string()));
+        assert_eq!(refused_command(refused, Some("make")), Some("make *".to_string()));
+        // A command that simply failed is not a permission to grant.
+        assert_eq!(refused_command("error: test failed", Some("cargo test")), None);
+        // Nothing to offer when it was not the shell that was refused.
+        assert_eq!(refused_command(refused, None), None);
+        // A rule we could not store safely is not offered at all.
+        assert_eq!(refused_command(refused, Some("foo(bar)")), None);
+    }
 
     #[test]
     fn tool_calls_show_the_useful_field() {

@@ -88,6 +88,8 @@ pub const DISPATCHER_MAX_TURNS: u32 = 8;
 pub const PLANNER_MAX_TURNS: u32 = 30;
 pub const WORKER_MAX_TURNS: u32 = 60;
 pub const REVIEWER_MAX_TURNS: u32 = 30;
+/// The resolver only has to make two versions of a few files fit together.
+pub const RESOLVER_MAX_TURNS: u32 = 20;
 pub const CHAT_MAX_TURNS: u32 = 20;
 
 /// Delay between starting two agents that run in parallel. Their prompts start the
@@ -170,6 +172,30 @@ Work economically: read only what you need, and run the tests once unless someth
 Verdict \"approve\" only if there is nothing that must be fixed. Put each required fix in
 \"must_fix\" with the number of the task whose worker should fix it, and the problem as
 \"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".";
+
+/// The resolver runs inside a merge that git could not finish. Its whole job is to
+/// make the clashing files whole again without losing either worker's work.
+const RESOLVER_INSTRUCTIONS: &str = "\
+You are the resolver on a small team. Two workers changed the same lines of a file, so git \
+could not merge their work. The files you are given are in your folder with git's conflict \
+markers in them: <<<<<<< for the first side, ======= between the two, >>>>>>> after the second.
+
+Your only job is to edit those files so that the markers are gone and both workers' work is \
+still there.
+
+Rules:
+- Touch only the files you are given. Nothing else, however tempting.
+- Keep both sides. If one side renamed something and the other used the old name, make them \
+  agree instead of dropping either change.
+- Never delete one side's work just to make the conflict go away.
+- Do not improve, tidy or add anything beyond making the two versions fit together.
+- Leave no conflict marker anywhere, in any file.
+- If the two changes truly cannot both stand, keep as much of both as you can and say so \
+  plainly in your report.
+
+Then report, in two or three sentences: what each side was doing, and what you did about it. \
+The reviewer reads the result afterwards, and the user sees every line before it reaches \
+their project.";
 
 const PLANNER_CHAT_INSTRUCTIONS: &str = "\
 You are the planner in a small team: you plan, up to {max_tasks} worker(s) implement in parallel,
@@ -336,6 +362,7 @@ fn review_schema() -> Value {
 pub const DISPATCHER_ID: &str = "dispatcher";
 pub const PLANNER_ID: &str = "planner";
 pub const REVIEWER_ID: &str = "reviewer";
+pub const RESOLVER_ID: &str = "resolver";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -344,6 +371,8 @@ pub enum Role {
     Planner,
     Worker,
     Reviewer,
+    /// Merges two workers' changes when they clash. Only runs when that happens.
+    Resolver,
 }
 
 /// One agent: who it is, which model it runs on, and what it is allowed to do.
@@ -531,6 +560,27 @@ pub fn reviewer_chat(settings: &Settings) -> AgentSpec {
     }
 }
 
+/// The resolver, which only runs when two workers' changes clash. It uses the
+/// workers' model: it is the same kind of work, on a few files.
+pub fn resolver(settings: &Settings) -> AgentSpec {
+    let tools = names(&[READ_TOOLS, EDIT_TOOLS]);
+    AgentSpec {
+        id: RESOLVER_ID.to_string(),
+        role: Role::Resolver,
+        label: "Resolver".to_string(),
+        model: settings.worker.model.clone(),
+        effort: settings.worker.effort,
+        instructions: instructions(RESOLVER_INSTRUCTIONS, settings),
+        allowed: tools.clone(),
+        tools,
+        output_schema: None,
+        max_budget_usd: settings.max_budget_usd,
+        max_turns: RESOLVER_MAX_TURNS,
+        use_mcp_servers: settings.use_mcp_servers,
+        chat: false,
+    }
+}
+
 /// The chat version of the agent with this ID, or `None` if you cannot message it
 /// directly (the dispatcher is reached through the main message box instead).
 pub fn chat_spec(settings: &Settings, agent_id: &str) -> Option<AgentSpec> {
@@ -552,6 +602,7 @@ pub fn all_agents(settings: &Settings) -> Vec<AgentSpec> {
     let mut agents = vec![dispatcher(settings), planner(settings)];
     agents.extend((1..=WORKER_COUNT).map(|number| worker(settings, number)));
     agents.push(reviewer(settings));
+    agents.push(resolver(settings));
     agents
 }
 
@@ -564,17 +615,21 @@ mod tests {
     }
 
     #[test]
-    fn only_workers_can_edit() {
+    fn only_workers_and_the_resolver_can_edit() {
         for spec in all_agents(&defaults()) {
             let can_edit = spec.tools.iter().any(|tool| tool == "Edit" || tool == "Write");
-            assert_eq!(can_edit, spec.role == Role::Worker, "{}", spec.id);
+            let writes = matches!(spec.role, Role::Worker | Role::Resolver);
+            assert_eq!(can_edit, writes, "{}", spec.id);
         }
     }
 
     #[test]
-    fn the_team_is_dispatcher_planner_three_workers_and_one_reviewer() {
+    fn the_team_is_dispatcher_planner_three_workers_a_reviewer_and_a_resolver() {
         let ids: Vec<String> = all_agents(&defaults()).into_iter().map(|spec| spec.id).collect();
-        assert_eq!(ids, ["dispatcher", "planner", "worker-1", "worker-2", "worker-3", "reviewer"]);
+        assert_eq!(
+            ids,
+            ["dispatcher", "planner", "worker-1", "worker-2", "worker-3", "reviewer", "resolver"]
+        );
     }
 
     #[test]
@@ -614,6 +669,14 @@ mod tests {
         for not_messageable in ["dispatcher", "worker-0", "worker-4", "reviewer-1", "boss", "worker"] {
             assert!(chat_spec(&settings, not_messageable).is_none(), "{not_messageable}");
         }
+    }
+
+    #[test]
+    fn the_resolver_can_edit_but_not_run_anything() {
+        let spec = resolver(&defaults());
+        assert!(spec.tools.iter().any(|tool| tool == "Edit"));
+        assert!(!spec.tools.iter().any(|tool| tool == "Bash"), "it runs inside a half-done merge");
+        assert!(spec.instructions.contains("Never delete one side's work"));
     }
 
     #[test]

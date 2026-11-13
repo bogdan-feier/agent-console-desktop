@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use crate::config::{Review, Task};
@@ -18,7 +18,7 @@ use crate::event::{AgentStatus, Event, EventKind};
 use crate::worktrees::Workspace;
 
 /// The stages a run moves through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     /// Nothing running and no changes waiting: talk, brainstorm or plan.
@@ -44,6 +44,9 @@ pub struct Run {
     pub project_dir: PathBuf,
     /// The first message of the run.
     pub request: String,
+    /// True for a run read back from disk. Its agents' sessions and worktrees are
+    /// gone with the app that made them, so it can be read but not continued.
+    pub restored: bool,
     sink: EventSink,
     inner: Mutex<Inner>,
 }
@@ -68,6 +71,8 @@ struct Inner {
     events: Vec<Event>,
     /// The latest plan's tasks (the approved ones once a round is open).
     tasks: Vec<Task>,
+    /// What the planner said the plan was for, used as a suggested commit message.
+    plan_summary: String,
     running_agents: BTreeSet<String>,
     /// Agent ID -> its latest session ID, so the agent can be resumed and
     /// remembers the conversation (for a fix, or when the user talks to it).
@@ -84,11 +89,50 @@ impl Run {
             id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
             project_dir: project_dir.into(),
             request: request.into(),
+            restored: false,
             sink,
             inner: Mutex::new(Inner {
                 state: RunState::Ready,
                 events: Vec::new(),
                 tasks: Vec::new(),
+                plan_summary: String::new(),
+                running_agents: BTreeSet::new(),
+                sessions: HashMap::new(),
+                round: None,
+                rounds_started: 0,
+                stop_signal: None,
+            }),
+        })
+    }
+
+    /// Rebuild a run from events that were saved to disk. Nothing can be started
+    /// on it: it exists so that a finished run can be read again later.
+    pub fn restored(
+        id: String,
+        project_dir: impl Into<PathBuf>,
+        request: impl Into<String>,
+        events: Vec<Event>,
+        sink: EventSink,
+    ) -> Arc<Run> {
+        let state = events
+            .iter()
+            .rev()
+            .find_map(|event| match event.kind {
+                EventKind::RunState { state } => Some(state),
+                _ => None,
+            })
+            .unwrap_or(RunState::Ready);
+        Arc::new(Run {
+            id,
+            project_dir: project_dir.into(),
+            request: request.into(),
+            restored: true,
+            sink,
+            inner: Mutex::new(Inner {
+                state,
+                events,
+                tasks: Vec::new(),
+                plan_summary: String::new(),
                 running_agents: BTreeSet::new(),
                 sessions: HashMap::new(),
                 round: None,
@@ -151,6 +195,15 @@ impl Run {
         self.lock().tasks = tasks;
     }
 
+    /// What the plan was for, in the planner's words.
+    pub fn plan_summary(&self) -> String {
+        self.lock().plan_summary.clone()
+    }
+
+    pub(crate) fn set_plan_summary(&self, summary: String) {
+        self.lock().plan_summary = summary;
+    }
+
     /// The task for worker `number` (counting from 1).
     pub fn task(&self, number: usize) -> Option<Task> {
         self.lock().tasks.get(number.wrapping_sub(1)).cloned()
@@ -194,7 +247,9 @@ impl Run {
     pub(crate) fn close_round(&self) -> Option<Arc<Workspace>> {
         let workspace = {
             let mut inner = self.lock();
-            inner.sessions.retain(|agent, _| !agent.starts_with("worker-") && agent != "reviewer");
+            inner.sessions.retain(|agent, _| {
+                !agent.starts_with("worker-") && agent != "reviewer" && agent != "resolver"
+            });
             inner.round.take().and_then(|round| round.workspace)
         };
         self.emit(None, EventKind::Round { open: false });
@@ -210,7 +265,12 @@ impl Run {
         let workspace = self.workspace();
         match (workspace, crate::config::worker_number(agent)) {
             (Some(workspace), Some(number)) => workspace.worker_dir(number),
-            (Some(workspace), None) if agent == crate::config::REVIEWER_ID => workspace.review_dir(),
+            // The reviewer and the resolver both work on everything merged together.
+            (Some(workspace), None)
+                if agent == crate::config::REVIEWER_ID || agent == crate::config::RESOLVER_ID =>
+            {
+                workspace.review_dir()
+            }
             _ => self.project_dir.clone(),
         }
     }

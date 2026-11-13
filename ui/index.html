@@ -27,6 +27,7 @@
 
     <span class="usage" id="run-usage" hidden></span>
     <span class="auth" id="auth-chip"></span>
+    <button type="button" id="open-history" title="Every run this app has saved, and what each one used">Runs</button>
     <button type="button" id="open-settings">Settings</button>
   </header>
 
@@ -36,6 +37,7 @@
       <div class="conversation-head">
         <h1>Conversation</h1>
         <span class="run-state" id="run-state">No run yet</span>
+        <span class="read-only" id="read-only" hidden title="This run was loaded from an earlier launch. Its agents and worktrees are gone, so it can be read but not continued.">Read only</span>
         <button type="button" class="quiet" id="new-run" title="Start over with fresh agents. Changes from an open round must be applied or discarded first.">New run</button>
       </div>
 
@@ -44,13 +46,14 @@
       <!-- Shown while a round's changes wait for your decision. -->
       <div class="round-bar" id="round-bar" hidden>
         <p id="round-text">The workers' changes are ready.</p>
-        <button type="button" class="apply" id="apply" title="Put the changes into your project as staged changes, for you to commit">Apply to project</button>
+        <button type="button" class="apply" id="open-changes" title="Look at the changes, then put them into your project">See changes and apply…</button>
         <button type="button" id="review-again" title="After talking to a worker: check everything again">Review again</button>
         <button type="button" class="quiet" id="discard" title="Delete the workers' copies. Your project is not touched.">Discard</button>
       </div>
 
       <form class="composer" id="composer">
         <p class="problem-line" id="notice" role="alert"></p>
+        <div class="prompts" id="prompts" hidden></div>
         <textarea id="message" rows="2" aria-label="Message"></textarea>
         <div class="composer-row">
           <div class="modes" role="radiogroup" aria-label="Who gets the message">
@@ -73,11 +76,55 @@
   </main>
 </div>
 
+<!-- What a round would put into your project, and the two ways to accept it. -->
+<dialog id="changes" aria-labelledby="changes-title">
+  <div class="dialog-head">
+    <h2 id="changes-title">Changes this round would make</h2>
+    <p class="hint">Nothing has reached your project yet. Applying stages the changes there; committing is optional.</p>
+  </div>
+  <div class="changes-body">
+    <div class="change-files" id="change-files"></div>
+    <pre class="change-patch" id="change-patch" tabindex="0" aria-label="Changes to the chosen file"></pre>
+  </div>
+  <div class="dialog-actions">
+    <p class="problem-line" id="changes-notice" role="alert"></p>
+    <label class="commit-line">
+      <span>Commit message</span>
+      <input type="text" id="commit-message" autofocus placeholder="What these changes do">
+    </label>
+    <button type="button" id="changes-close">Close</button>
+    <span class="spacer"></span>
+    <button type="button" id="apply-only" title="Put the changes in your project as staged changes, and commit them yourself">Apply only</button>
+    <button type="button" class="primary" id="apply-commit">Apply and commit</button>
+  </div>
+</dialog>
+
+<!-- Every run this app has saved. -->
+<dialog id="history" aria-labelledby="history-title">
+  <div class="dialog-head">
+    <h2 id="history-title">Runs</h2>
+    <p class="hint" id="history-total"></p>
+  </div>
+  <div class="dialog-body">
+    <div class="run-list" id="run-list"></div>
+  </div>
+  <div class="dialog-actions">
+    <p class="problem-line" id="history-notice" role="alert"></p>
+    <span class="spacer"></span>
+    <button type="button" id="history-close">Close</button>
+  </div>
+</dialog>
+
 <dialog id="settings" aria-labelledby="settings-title">
   <form id="settings-form" method="dialog">
     <div class="dialog-head">
       <h2 id="settings-title">Settings</h2>
       <p class="hint">Changes apply to the next agent that starts, including in a run that is in progress.</p>
+      <label class="switch scope">
+        <input type="checkbox" id="own-settings">
+        <span id="own-settings-label">Keep separate settings for this project</span>
+      </label>
+      <p class="hint" id="scope-note"></p>
     </div>
 
     <div class="dialog-body">
@@ -86,7 +133,7 @@
         <div class="presets" id="presets">
           <span class="presets-label">Start from</span>
         </div>
-        <p class="hint">A preset fills in this section only; permissions, team and notes stay as they are.</p>
+        <p class="hint">A preset fills in this section only; the other sections stay as they are.</p>
         <div class="settings-grid" id="settings-roles">
           <span class="grid-head"></span><span class="grid-head">Model</span><span class="grid-head">Effort</span><span class="grid-head" title="Most replies one session may take before it stops. Empty means the default shown.">Turn limit</span>
         </div>
@@ -118,12 +165,19 @@
       </section>
 
       <section class="settings-section" aria-labelledby="team-title">
-        <h3 id="team-title">Team</h3>
+        <h3 id="team-title">Team and checks</h3>
         <div class="field-row">
           <label for="worker-count">Most workers one plan may use</label>
           <select id="worker-count"></select>
         </div>
         <p class="hint">Fewer workers means smaller plans and less usage. The planner already uses one task unless the work clearly splits.</p>
+        <label class="switch">
+          <input type="checkbox" id="resolve-conflicts">
+          <span>Have an agent merge changes that clash <span class="hint">(when two workers changed the same lines; it works only on the clashing files, and the reviewer then checks the result)</span></span>
+        </label>
+        <label for="check-command">Command to run on the merged changes, before the reviewer sees them</label>
+        <input type="text" id="check-command" spellcheck="false" placeholder="cargo test">
+        <p class="hint">The app runs this itself, so it costs nothing, and gives the output to the reviewer. Leave it empty to skip it.</p>
       </section>
 
       <section class="settings-section" aria-labelledby="notes-title">
@@ -143,6 +197,7 @@
     </div>
   </form>
 </dialog>
-<script src="app.js"></script>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>

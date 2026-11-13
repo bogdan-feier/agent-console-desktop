@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Review, Task};
 use crate::run::RunState;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Position in the run's event list, starting at 0.
     pub seq: usize,
@@ -20,7 +20,7 @@ pub struct Event {
 }
 
 /// The `type` field of the JSON says which variant this is.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
     RunState {
@@ -59,6 +59,10 @@ pub enum EventKind {
     /// A tool call that was refused or failed.
     ToolError {
         detail: String,
+        /// When a shell command was refused: the rule that would allow commands
+        /// like it, ready to be added to the allowed list. `None` for anything
+        /// else, and for a command that failed on its own terms.
+        allow_rule: Option<String>,
     },
     Error {
         message: String,
@@ -72,6 +76,14 @@ pub enum EventKind {
     Plan {
         summary: String,
         tasks: Vec<Task>,
+    },
+    /// The project's own check command, run by the app rather than by an agent.
+    Checks {
+        command: String,
+        passed: bool,
+        /// How it ended and how long it took.
+        note: String,
+        output: String,
     },
     Review(Review),
 }
@@ -89,7 +101,7 @@ pub struct TokenUsage {
     pub cache_creation_input_tokens: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Running,

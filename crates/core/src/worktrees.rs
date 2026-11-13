@@ -56,6 +56,34 @@ pub struct Workspace {
     workers: usize,
 }
 
+/// Longest patch the Changes window is given for one file. A patch longer than
+/// this is cut off: the window is for reading, and nobody reads 400kB of diff.
+pub const MAX_PATCH_CHARS: usize = 60_000;
+
+/// How a merge into the review worktree went.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Merge {
+    /// Every branch went in. The review worktree holds all the work.
+    Clean,
+    /// Git stopped partway through `worker`'s branch: these files have changes on
+    /// both sides of the same lines. The merge is still in progress in the review
+    /// worktree, with the markers in the files, waiting to be resolved or aborted.
+    Conflicted { worker: usize, files: Vec<String> },
+}
+
+/// One file's changes, for the window that shows a round before you apply it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileChange {
+    pub path: String,
+    /// Lines added and removed, for the summary next to the name.
+    pub added: usize,
+    pub removed: usize,
+    /// The workers whose branches touched this file.
+    pub workers: Vec<usize>,
+    /// The `git diff` for this file alone.
+    pub patch: String,
+}
+
 /// What a worker changed, once committed on its branch.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct WorkerCommit {
@@ -166,27 +194,76 @@ impl Workspace {
         Ok(WorkerCommit { changed, outside_task })
     }
 
-    /// Merge the branches of these workers into the review worktree. A branch that
-    /// is already merged is skipped by git. On a clash, the merge is undone and the
-    /// error names the files.
-    pub async fn merge_into_review(&self, workers: &[usize]) -> Result<(), String> {
+    /// Merge the branches of these workers into the review worktree, in order. A
+    /// branch that is already merged is skipped by git, so this is safe to call
+    /// again after a conflict has been resolved.
+    ///
+    /// On a clash the merge is **left in progress**, with git's markers in the
+    /// files, and the caller decides: resolve it ([`finish_merge`]) or give up
+    /// ([`abort_merge`]).
+    pub async fn merge_into_review(&self, workers: &[usize]) -> Result<Merge, String> {
         let dir = self.review_dir();
         for &number in workers {
             let branch = self.branch(&format!("worker-{number}"));
             let merge =
                 [COMMIT_SETTINGS, &["merge", "-q", "--no-ff", "--no-edit", "--no-verify", &branch]].concat();
             if git(&dir, &merge).await.is_err() {
-                let clashing =
-                    git(&dir, &["diff", "--name-only", "--diff-filter=U"]).await.unwrap_or_default();
-                let _ = git(&dir, &["merge", "--abort"]).await;
-                let files = clashing.lines().collect::<Vec<_>>().join(", ");
-                return Err(format!(
-                    "Worker {number}'s changes clash with another worker's in: {files}. Two tasks changed the \
-                     same file. Send one worker back to undo its change there, or discard and plan again."
-                ));
+                let files = self.unresolved().await;
+                if files.is_empty() {
+                    // It failed for some other reason; leave nothing half-done.
+                    let _ = git(&dir, &["merge", "--abort"]).await;
+                    return Err(format!("Could not merge worker {number}'s changes."));
+                }
+                return Ok(Merge::Conflicted { worker: number, files });
             }
         }
-        Ok(())
+        Ok(Merge::Clean)
+    }
+
+    /// The files of the merge in progress that still have both sides in them.
+    pub async fn unresolved(&self) -> Vec<String> {
+        let listed = git(&self.review_dir(), &["diff", "--name-only", "--diff-filter=U"]).await;
+        listed.unwrap_or_default().lines().filter(|line| !line.is_empty()).map(str::to_string).collect()
+    }
+
+    /// Any of `files` that still has a conflict marker in it. Git calls a file
+    /// resolved as soon as it is staged, so this is the check that it really is.
+    pub async fn still_marked(&self, files: &[String]) -> Vec<String> {
+        let mut marked = Vec::new();
+        for file in files {
+            let full = self.review_dir().join(file);
+            if let Ok(text) = tokio::fs::read_to_string(&full).await {
+                let has_marker =
+                    text.lines().any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"));
+                if has_marker {
+                    marked.push(file.clone());
+                }
+            }
+        }
+        marked
+    }
+
+    /// Finish a merge whose conflicts have been resolved: stage everything and
+    /// commit it. `files` are the ones that clashed; if any still has both
+    /// versions in it, nothing is staged and nothing is committed.
+    ///
+    /// The marker check has to come first: `git add` counts a file as resolved the
+    /// moment it is staged, markers and all.
+    pub async fn finish_merge(&self, worker: usize, files: &[String], how: &str) -> Result<(), String> {
+        let marked = self.still_marked(files).await;
+        if !marked.is_empty() {
+            return Err(format!("still has both versions in it: {}", marked.join(", ")));
+        }
+        let dir = self.review_dir();
+        git(&dir, &["add", "-A"]).await?;
+        let message = format!("merge worker {worker} ({how})");
+        let commit = [COMMIT_SETTINGS, &["commit", "-q", "--no-verify", "-m", &message]].concat();
+        git(&dir, &commit).await.map(|_| ())
+    }
+
+    /// Undo a merge that is in progress, putting the review worktree back as it was.
+    pub async fn abort_merge(&self) {
+        let _ = git(&self.review_dir(), &["merge", "--abort"]).await;
     }
 
     /// The commit the review worktree is at.
@@ -204,6 +281,37 @@ impl Workspace {
             Ok(diff) if diff.chars().count() > MAX_CHANGES_CHARS => Changes::TooLong,
             Ok(diff) => Changes::Diff(diff),
         }
+    }
+
+    /// Every file this round would change, with its own patch, for the window that
+    /// shows the changes before they are applied.
+    pub async fn file_changes(&self) -> Result<Vec<FileChange>, String> {
+        let range = format!("{}..HEAD", self.base);
+        let diff = git(&self.review_dir(), &["diff", &range]).await?;
+
+        // Which worker touched what, so each file can say where it came from.
+        let mut by_worker: Vec<(usize, Vec<String>)> = Vec::new();
+        for number in 1..=self.workers {
+            let branch = self.branch(&format!("worker-{number}"));
+            let range = format!("{}..{branch}", self.base);
+            if let Ok(listed) = git(&self.project_dir, &["diff", "--name-only", &range]).await {
+                by_worker.push((number, listed.lines().map(str::to_string).collect()));
+            }
+        }
+
+        Ok(split_patches(&diff)
+            .into_iter()
+            .map(|(path, patch)| {
+                let workers = by_worker
+                    .iter()
+                    .filter(|(_, files)| files.contains(&path))
+                    .map(|(number, _)| *number)
+                    .collect();
+                let (added, removed) = count_changed_lines(&patch);
+                let patch = cut_to(patch, MAX_PATCH_CHARS);
+                FileChange { path, added, removed, workers, patch }
+            })
+            .collect())
     }
 
     /// Put the reviewed changes into the project folder as staged, uncommitted
@@ -229,6 +337,12 @@ impl Workspace {
         Ok(staged.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
     }
 
+    /// Commit what [`apply`] staged, as you, with your hooks. Anything else you had
+    /// staged would go in too, so this is only called right after a clean apply.
+    pub async fn commit(&self, message: &str) -> Result<(), String> {
+        git(&self.project_dir, &["commit", "-q", "-m", message]).await.map(|_| ())
+    }
+
     /// Delete this round's worktrees and branches. Safe to call more than once.
     pub async fn remove(&self) {
         for part in self.parts() {
@@ -239,6 +353,48 @@ impl Workspace {
         let _ = tokio::fs::remove_dir_all(&self.root).await;
         let _ = git(&self.project_dir, &["worktree", "prune"]).await;
     }
+}
+
+/// Split one `git diff` into (path, patch) pairs, one per file.
+fn split_patches(diff: &str) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = Vec::new();
+    for chunk in diff.split("\ndiff --git ") {
+        let chunk = chunk.strip_prefix("diff --git ").unwrap_or(chunk);
+        if chunk.trim().is_empty() {
+            continue;
+        }
+        let header = chunk.lines().next().unwrap_or_default();
+        // "a/src/main.rs b/src/main.rs" -> "src/main.rs". A renamed file keeps its
+        // new name, which is the one the project will have.
+        let Some(path) = header.rsplit(" b/").next().map(str::to_string) else { continue };
+        files.push((path, format!("diff --git {chunk}")));
+    }
+    files
+}
+
+/// Lines added and removed in one file's patch.
+fn count_changed_lines(patch: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in patch.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added, removed)
+}
+
+fn cut_to(text: String, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text;
+    }
+    let kept: String = text.chars().take(limit).collect();
+    format!("{kept}\n... (this file's changes are too long to show in full)")
 }
 
 fn path_arg(path: &Path) -> String {
@@ -316,7 +472,7 @@ mod tests {
         let two = workspace.commit_worker(2, "add c", &files(&["c.py"])).await.unwrap();
         assert_eq!(two.outside_task, files(&["notes.txt"]));
 
-        workspace.merge_into_review(&[1, 2]).await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1, 2]).await.unwrap(), Merge::Clean);
         let Changes::Diff(diff) = workspace.review_changes(None).await else { panic!("expected a diff") };
         assert!(diff.contains("+x = 2") && diff.contains("+z = 3"));
 
@@ -324,7 +480,7 @@ mod tests {
         let reviewed = workspace.review_commit().await.unwrap();
         fs::write(workspace.worker_dir(1).join("a.py"), "x = 3\n").unwrap();
         workspace.commit_worker(1, "fix a", &files(&["a.py"])).await.unwrap();
-        workspace.merge_into_review(&[1, 2]).await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1, 2]).await.unwrap(), Merge::Clean);
         let Changes::Diff(since) = workspace.review_changes(Some(&reviewed)).await else {
             panic!("expected a diff")
         };
@@ -351,24 +507,95 @@ mod tests {
             workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap(),
             WorkerCommit::default()
         );
-        workspace.merge_into_review(&[1]).await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1]).await.unwrap(), Merge::Clean);
         assert_eq!(workspace.review_changes(None).await, Changes::Nothing);
         workspace.remove().await;
     }
 
-    #[tokio::test]
-    async fn two_workers_changing_the_same_file_is_reported_as_a_clash() {
+    /// Two workers edit the same line of a.py, so git cannot merge them.
+    async fn clashing_round() -> (tempfile::TempDir, Workspace) {
         let project = project();
         let workspace = Workspace::create(project.path(), &run_id(), 1, 2).await.unwrap();
         fs::write(workspace.worker_dir(1).join("a.py"), "x = 'one'\n").unwrap();
         fs::write(workspace.worker_dir(2).join("a.py"), "x = 'two'\n").unwrap();
         workspace.commit_worker(1, "t1", &files(&["a.py"])).await.unwrap();
         workspace.commit_worker(2, "t2", &files(&["a.py"])).await.unwrap();
+        (project, workspace)
+    }
 
-        let problem = workspace.merge_into_review(&[1, 2]).await.unwrap_err();
-        assert!(problem.contains("Worker 2") && problem.contains("a.py"), "{problem}");
-        // The failed merge was undone: the review worktree has worker 1's version.
+    #[tokio::test]
+    async fn a_clash_leaves_the_merge_open_for_the_resolver() {
+        let (_project, workspace) = clashing_round().await;
+        let outcome = workspace.merge_into_review(&[1, 2]).await.unwrap();
+        assert_eq!(outcome, Merge::Conflicted { worker: 2, files: files(&["a.py"]) });
+
+        // The file has both sides in it, and the app can tell.
+        let both = fs::read_to_string(workspace.review_dir().join("a.py")).unwrap();
+        assert!(both.contains("<<<<<<<") && both.contains("x = 'one'") && both.contains("x = 'two'"));
+        assert_eq!(workspace.still_marked(&files(&["a.py"])).await, files(&["a.py"]));
+        // Staging a file that still has markers does not count as resolved.
+        assert!(workspace.finish_merge(2, &files(&["a.py"]), "test").await.is_err());
+
+        // What the resolver does: write a version with both sides in it.
+        fs::write(workspace.review_dir().join("a.py"), "x = 'one and two'\n").unwrap();
+        assert!(workspace.still_marked(&files(&["a.py"])).await.is_empty());
+        workspace.finish_merge(2, &files(&["a.py"]), "resolved by the resolver").await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1, 2]).await.unwrap(), Merge::Clean);
+
+        let applied = workspace.apply().await.unwrap();
+        assert_eq!(applied, files(&["a.py"]));
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_clash_can_be_abandoned_instead() {
+        let (_project, workspace) = clashing_round().await;
+        workspace.merge_into_review(&[1, 2]).await.unwrap();
+        workspace.abort_merge().await;
+        // Back to worker 1's version, with nothing half-merged.
         assert_eq!(fs::read_to_string(workspace.review_dir().join("a.py")).unwrap(), "x = 'one'\n");
+        assert!(workspace.unresolved().await.is_empty());
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn the_changes_are_listed_one_file_at_a_time() {
+        let project = project();
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 2).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 1\ny = 2\n").unwrap();
+        fs::write(workspace.worker_dir(2).join("c.py"), "z = 3\n").unwrap();
+        workspace.commit_worker(1, "t1", &files(&["a.py"])).await.unwrap();
+        workspace.commit_worker(2, "t2", &files(&["c.py"])).await.unwrap();
+        workspace.merge_into_review(&[1, 2]).await.unwrap();
+
+        let changes = workspace.file_changes().await.unwrap();
+        let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+        assert_eq!(paths, ["a.py", "c.py"]);
+
+        let first = &changes[0];
+        assert_eq!(first.workers, vec![1], "each file says which worker changed it");
+        assert_eq!((first.added, first.removed), (1, 0), "one line added, the other unchanged");
+        assert!(first.patch.contains("+y = 2") && !first.patch.contains("z = 3"));
+        assert_eq!(changes[1].workers, vec![2]);
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn applying_can_commit_too() {
+        let project = project();
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        workspace.merge_into_review(&[1]).await.unwrap();
+        workspace.apply().await.unwrap();
+
+        run_git(project.path(), &["config", "user.name", "Test"]);
+        run_git(project.path(), &["config", "user.email", "test@example.com"]);
+        workspace.commit("add the thing").await.unwrap();
+        let log = run_git(project.path(), &["log", "--oneline"]);
+        assert_eq!(log.lines().count(), 2);
+        assert!(log.contains("add the thing"), "{log}");
+        assert!(run_git(project.path(), &["status", "--porcelain"]).trim().is_empty(), "nothing left over");
         workspace.remove().await;
     }
 
@@ -395,7 +622,7 @@ mod tests {
         let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
         fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
         workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
-        workspace.merge_into_review(&[1]).await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1]).await.unwrap(), Merge::Clean);
 
         fs::write(project.path().join("b.py"), "y = 2\n").unwrap();
         let problem = workspace.apply().await.unwrap_err();

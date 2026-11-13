@@ -55,6 +55,8 @@ impl AgentRunner for ScriptedRunner {
             (Role::Planner, false) => (String::new(), Some(self.plan(run, spec).await)),
             (Role::Worker, false) => (self.work(run, spec, prompt).await, None),
             (Role::Reviewer, false) => (String::new(), Some(self.review(run, spec).await)),
+            // The resolver never runs in these tests: nothing they script edits files.
+            (Role::Resolver, _) => ("Nothing to merge.".to_string(), None),
             (_, true) => (self.chat_reply(run, spec, prompt).await, None),
         };
         // Made-up but realistic numbers, so usage reporting is exercised too.
@@ -158,7 +160,7 @@ impl ScriptedRunner {
         // The first line of the user's message, shortened, so the reply visibly answers it.
         let topic: String = prompt.lines().next().unwrap_or_default().chars().take(80).collect();
         let reply = match spec.role {
-            Role::Planner | Role::Dispatcher => {
+            Role::Planner | Role::Dispatcher | Role::Resolver => {
                 self.tool(run, spec, "Grep", "def ").await;
                 self.tool(run, spec, "Read", "src/textstats/stats.py").await;
                 format!(

@@ -1,0 +1,62 @@
+# Runs on every push and pull request: the same three checks you run before a
+# commit, plus a syntax check of the page's JavaScript.
+#
+# Ubuntu is used because it is the quickest runner. The engine (crates/core) is
+# the same everywhere; only the Tauri shell is macOS-specific, and the system
+# libraries installed below are what it needs to build on Linux.
+
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run at a time per branch: a new push makes the previous run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Format, clippy and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the libraries Tauri needs on Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Caches the registry and target/ between runs, so later runs take a minute
+      # instead of ten.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+  page:
+    name: The page parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check every module
+        run: for file in ui/app.js ui/parts/*.js; do node --check "$file"; done

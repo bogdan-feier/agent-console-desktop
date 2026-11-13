@@ -339,8 +339,11 @@ impl Workspace {
 
     /// Commit what [`apply`] staged, as you, with your hooks. Anything else you had
     /// staged would go in too, so this is only called right after a clean apply.
+    ///
+    /// It is your commit, so it uses your git identity. If you have none set, git
+    /// refuses, and the reason is passed back for the window to show.
     pub async fn commit(&self, message: &str) -> Result<(), String> {
-        git(&self.project_dir, &["commit", "-q", "-m", message]).await.map(|_| ())
+        git(&self.project_dir, &["commit", "-q", "-m", message]).await.map(|_| ()).map_err(why)
     }
 
     /// Delete this round's worktrees and branches. Safe to call more than once.
@@ -352,6 +355,16 @@ impl Workspace {
         }
         let _ = tokio::fs::remove_dir_all(&self.root).await;
         let _ = git(&self.project_dir, &["worktree", "prune"]).await;
+    }
+}
+
+/// The line of a git error worth showing. Git explains itself at length (the
+/// "*** Please tell me who you are" speech is seven lines); the `fatal:` line at
+/// the end is the part that says what actually went wrong.
+fn why(problem: String) -> String {
+    match problem.lines().rev().find(|line| line.starts_with("fatal:") || line.starts_with("error:")) {
+        Some(line) => line.trim_start_matches("fatal:").trim_start_matches("error:").trim().to_string(),
+        None => problem,
     }
 }
 
@@ -440,6 +453,10 @@ mod tests {
     fn project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         run_git(dir.path(), &["init", "-q"]);
+        // The identity "apply and commit" uses is the project's own, so the test
+        // project needs one; the machine running the test may have none.
+        run_git(dir.path(), &["config", "user.name", "Test"]);
+        run_git(dir.path(), &["config", "user.email", "test@example.com"]);
         fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
         fs::write(dir.path().join("b.py"), "y = 1\n").unwrap();
         run_git(dir.path(), &["add", "."]);
@@ -580,6 +597,19 @@ mod tests {
         workspace.remove().await;
     }
 
+    #[test]
+    fn a_git_error_is_cut_down_to_the_line_that_says_what_went_wrong() {
+        let speech = "Author identity unknown\n\n*** Please tell me who you are.\n\nRun\n\n  git \
+                      config --global user.email \"you@example.com\"\n\nfatal: unable to auto-detect \
+                      email address (got 'runner@fv-az123.(none)')";
+        assert_eq!(
+            why(speech.to_string()),
+            "unable to auto-detect email address (got 'runner@fv-az123.(none)')"
+        );
+        // Nothing to cut down to: the whole thing is kept rather than lost.
+        assert_eq!(why("something odd".to_string()), "something odd");
+    }
+
     #[tokio::test]
     async fn applying_can_commit_too() {
         let project = project();
@@ -589,8 +619,6 @@ mod tests {
         workspace.merge_into_review(&[1]).await.unwrap();
         workspace.apply().await.unwrap();
 
-        run_git(project.path(), &["config", "user.name", "Test"]);
-        run_git(project.path(), &["config", "user.email", "test@example.com"]);
         workspace.commit("add the thing").await.unwrap();
         let log = run_git(project.path(), &["log", "--oneline"]);
         assert_eq!(log.lines().count(), 2);

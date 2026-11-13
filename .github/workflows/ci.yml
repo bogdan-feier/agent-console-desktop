@@ -27,11 +27,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only packages that exist on both Ubuntu 22.04 and 24.04, so this does not
+      # break when ubuntu-latest moves on. (libappindicator3-dev is 22.04 only; the
+      # ayatana one replaced it.)
       - name: Install the libraries Tauri needs on Linux
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+            build-essential patchelf \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

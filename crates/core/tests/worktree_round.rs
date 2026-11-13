@@ -85,6 +85,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
+    // A real project is committed to by whoever owns it, so "apply and commit" uses
+    // the project's own identity, not ours. Give this one an identity to use; a
+    // machine with no git identity at all (a CI runner) has none to fall back on.
+    git(dir.path(), &["config", "user.name", "Test"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
     fs::write(dir.path().join("README.md"), "project\n").unwrap();
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-q", "-m", "start"]);

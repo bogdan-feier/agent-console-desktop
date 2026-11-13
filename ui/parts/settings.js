@@ -164,6 +164,7 @@ function refreshScope() {
 
 export function openSettings() {
   $("notification-note").textContent = "";
+  $("suggest-note").textContent = "";
   fillSettingsForm(app.settings);
   $("own-settings").checked = Boolean(app.settings.own);
   refreshScope();
@@ -196,6 +197,35 @@ export async function allowCommand(command) {
   });
 }
 
+/// Offer the commands this kind of project usually needs, and its check command.
+/// They go into the boxes, not into the settings: saving is still a decision.
+async function suggestCommands() {
+  const note = $("suggest-note");
+  if (!app.folder) {
+    note.textContent = "Choose a project first.";
+    return;
+  }
+  const found = await invoke("project_suggestions", { projectDir: app.folder });
+  if (!found.kinds.length) {
+    note.textContent = "Nothing recognised in this project, so there is nothing to suggest. "
+      + "Add the commands you use by hand.";
+    return;
+  }
+  const already = $("commands").value.split("\n").map((line) => line.trim());
+  const added = found.commands.filter((command) => !already.includes(command));
+  if (added.length) {
+    $("commands").value = already.concat(added).filter(Boolean).join("\n");
+  }
+  let said = added.length
+    ? found.kinds.join(" and ") + " project: added " + added.length + " command" + (added.length === 1 ? "" : "s")
+    : found.kinds.join(" and ") + " project: its usual commands are already here";
+  if (found.check && !$("check-command").value.trim()) {
+    $("check-command").value = found.check;
+    said += ", and filled in the check command";
+  }
+  note.textContent = said + ". Look them over, then save.";
+}
+
 /// Ask macOS, send one, and say plainly what happened. This is also how the
 /// permission box is brought up on purpose, rather than waiting for a round.
 async function testNotification() {
@@ -215,6 +245,9 @@ async function testNotification() {
 export function wireSettings() {
   $("open-settings").addEventListener("click", openSettings);
   $("test-notification").addEventListener("click", testNotification);
+  $("suggest-commands").addEventListener("click", () => {
+    suggestCommands().catch((error) => { $("suggest-note").textContent = problemText(error); });
+  });
   $("settings-cancel").addEventListener("click", () => $("settings").close());
   $("settings-reset").addEventListener("click", () => fillSettingsForm(app.defaults));
   $("own-settings").addEventListener("change", refreshScope);

@@ -338,3 +338,69 @@ async fn the_apps_own_check_runs_on_the_merged_work_and_the_reviewer_is_told() {
     assert!(review_prompt.contains("checked-ok"), "the reviewer does not have to run it again");
     assert!(review_prompt.contains("passed"), "{review_prompt}");
 }
+
+#[tokio::test]
+async fn a_round_can_be_picked_up_after_the_app_is_restarted() {
+    let project = project();
+    let runner = Arc::new(WritingRunner::default());
+    let orchestrator = orchestrator(runner.clone());
+    let collected = Collected::default();
+    let run = new_run(project.path(), &collected);
+
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    assert_eq!(run.state(), RunState::Done);
+
+    // What the app writes to disk between phases, through JSON and back.
+    let saved = run.snapshot();
+    let text = serde_json::to_string(&saved).unwrap();
+    let read_back: agent_console_core::run::Snapshot = serde_json::from_str(&text).unwrap();
+    let events = run.events();
+    let request = run.request.clone();
+    let id = run.id.clone();
+    drop(run);
+
+    // As the app does on opening a saved run: find the round's worktrees again.
+    let round = read_back.round.as_ref().unwrap();
+    let kept = round.workspace.as_ref().unwrap();
+    let workspace =
+        agent_console_core::worktrees::Workspace::reopen(project.path(), &id, 1, kept.workers, &kept.base)
+            .await
+            .unwrap();
+    let again = Run::from_saved(
+        id,
+        project.path(),
+        request,
+        events,
+        Some(read_back),
+        Some(Arc::new(workspace)),
+        collected.sink(),
+    );
+
+    assert!(again.resumable(), "its sessions and worktrees are all still there");
+    assert_eq!(again.state(), RunState::Done, "still waiting for you to decide");
+    assert_eq!(again.tasks().len(), 2, "the plan came back too");
+    assert_eq!(again.session("planner").as_deref(), Some("s-planner"), "the planner can be resumed");
+
+    // And the round really can be finished: the worktrees are the same ones.
+    supervised(again.clone(), orchestrator.apply(&again, None)).await;
+    assert_eq!(again.state(), RunState::Ready);
+    let staged = git(project.path(), &["diff", "--cached", "--name-only"]);
+    assert!(staged.contains("file1.py") && staged.contains("file2.py"), "staged: {staged}");
+}
+
+#[tokio::test]
+async fn a_saved_run_with_nothing_kept_about_it_can_only_be_read() {
+    let project = project();
+    let collected = Collected::default();
+    let run = Run::from_saved(
+        "old".to_string(),
+        project.path(),
+        "an older run",
+        Vec::new(),
+        None,
+        None,
+        collected.sink(),
+    );
+    assert!(!run.resumable());
+}

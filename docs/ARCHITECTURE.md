@@ -90,20 +90,37 @@ orchestrator's `merge_all` then has two ways to go:
 The resolver's work is reviewed like any other change, and the user sees every line in the
 Changes window before it reaches the project.
 
+## Suggesting commands
+
+`project.rs` reads a project's own files (`Cargo.toml`, `package.json` and its scripts,
+`pyproject.toml`, `uv.lock`, `go.mod`, `Makefile`) and returns the allowed-command rules and
+check command that kind of project usually needs. It runs nothing and decides nothing: the
+Settings window puts the result in the boxes, and the user saves or does not.
+
 ## Checks without an agent
 
 If Settings has a check command, `checks.rs` runs it in the review worktree with a timeout,
 shortens its output from both ends, and puts it in the reviewer's prompt and in a `checks`
 event. The reviewer is told it does not need to run it again, which saves it several turns.
 
-## Saving runs
+## Saving runs, and picking them up again
 
 Every event is written to `runs/<run id>.jsonl` next to the settings, one JSON object per
 line, by the same sink that sends it to the window (`window_sink` in `src-tauri/src/lib.rs`).
-The first line says what the run was. `store.rs` reads these files back for the Runs window,
-skipping any line that does not parse, so a file cut short by a crash still opens. A
-restored run is marked `restored` and every command that would act on it refuses: its agent
-sessions and worktrees belonged to the app that made them.
+The first line says what the run was and how the team was set up for it. `store.rs` reads
+these files back for the Runs window, skipping any line that does not parse, so a file cut
+short by a crash still opens.
+
+The events say what happened; they are not enough to carry on. For that, `spawn_phase` writes
+`Run::snapshot()` to `runs/<run id>.state.json` after every phase: the agent sessions to
+resume, the open round, the plan. Opening a saved run (`open_run`) needs three things to go
+on with it: that file, the project folder, and, if a round was open, its worktrees
+(`Workspace::reopen` checks each one is still a git worktree). Missing any of them, the run
+is marked `restored`, every command that would act on it refuses, and the window says which
+was missing.
+
+A run that was mid-phase when the app closed comes back as `Stopped`, since whatever was
+running died with the app, while its round stays open to apply, discard or review again.
 
 Claude Code finds a session to resume by folder. Worktree paths stay the same for the
 whole round, so workers and the reviewer can be resumed until the round closes; then
@@ -188,9 +205,10 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
 | `crates/core/tests/flow.rs` | The whole flow with scripted agents (`tests/common/scripted.rs`): dispatcher routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
-| `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files: the resolver merging a clash, failing to, and being turned off; the check command; apply and commit |
+| `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files: the resolver merging a clash, failing to, and being turned off; the check command; apply and commit; a round saved, read back through JSON and then applied, as a restart does |
 | `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes left open for the resolver, the per-file diff, apply refusing, committing, cleanup |
 | `#[cfg(test)]` in `crates/core/src/checks.rs` | The check command: passing, failing, where it runs, shortening long output |
+| `#[cfg(test)]` in `crates/core/src/project.rs` | What each kind of project is offered, and that an unknown one is offered nothing |
 | `#[cfg(test)]` in `src-tauri/src/store.rs` | Saved runs: written line by line, read back, a file cut short, the list |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |
 | `#[cfg(test)]` in `crates/core/src/changes.rs` | Diffs from real temporary git repositories |

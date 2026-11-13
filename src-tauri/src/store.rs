@@ -12,8 +12,10 @@
 //! as the window receives it. Appending a line is cheap and a half-written line at
 //! the end (the app was killed mid-write) costs nothing: it is skipped on reading.
 //!
-//! A run read back from disk can be looked at, not continued. Its agents' sessions
-//! and its worktrees belonged to the app that made them.
+//! Beside it, `runs/<id>.state.json` holds where the run had got to after its last
+//! phase: the agent sessions to resume, the open round, the plan. That is what
+//! lets a run be carried on after the app is closed; without it, or with its
+//! worktrees gone, the run can still be read.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -21,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_console_core::event::EventKind;
+use agent_console_core::run::Snapshot;
+use agent_console_core::settings::{RoleSettings, Settings};
 use agent_console_core::{Event, Run};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +39,39 @@ pub struct Head {
     pub request: String,
     /// Seconds since 1970, so the window can show the date in the user's own format.
     pub started_at: u64,
+    /// How the team was set up for this run. Missing in runs saved before the app
+    /// kept it, which is why the Runs window has to cope with `None`.
+    #[serde(default)]
+    pub models: Option<RunModels>,
+}
+
+/// What a run was set up with, so its cost can be compared with another's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunModels {
+    /// The preset this matches ("lean", "balanced", "thorough"), when it matches one.
+    pub preset: Option<String>,
+    pub dispatcher: RoleSettings,
+    pub planner: RoleSettings,
+    pub worker: RoleSettings,
+    pub reviewer: RoleSettings,
+    /// Most workers one plan could use.
+    pub workers: usize,
+}
+
+impl RunModels {
+    pub fn of(settings: &Settings) -> RunModels {
+        RunModels {
+            preset: settings
+                .matching_preset()
+                .and_then(|preset| serde_json::to_value(preset).ok())
+                .and_then(|value| value.as_str().map(str::to_string)),
+            dispatcher: settings.dispatcher.clone(),
+            planner: settings.planner.clone(),
+            worker: settings.worker.clone(),
+            reviewer: settings.reviewer.clone(),
+            workers: settings.worker_count,
+        }
+    }
 }
 
 /// One run in the Runs window.
@@ -48,6 +85,7 @@ pub struct RunSummary {
     pub rounds: usize,
     pub tokens: u64,
     pub cost_usd: f64,
+    pub models: Option<RunModels>,
 }
 
 pub struct RunStore {
@@ -64,13 +102,18 @@ impl RunStore {
         self.folder.join(format!("{run_id}.jsonl"))
     }
 
+    fn state_path(&self, run_id: &str) -> PathBuf {
+        self.folder.join(format!("{run_id}.state.json"))
+    }
+
     /// Write the first line of a new run's file.
-    pub fn start(&self, run: &Run) {
+    pub fn start(&self, run: &Run, models: RunModels) {
         let head = Head {
             id: run.id.clone(),
             project_dir: run.project_dir.to_string_lossy().into_owned(),
             request: run.request.clone(),
             started_at: now(),
+            models: Some(models),
         };
         if fs::create_dir_all(&self.folder).is_err() {
             return;
@@ -88,6 +131,24 @@ impl RunStore {
         if let Ok(mut file) = opened {
             let _ = file.write_all((line + "\n").as_bytes());
         }
+    }
+
+    /// Save where the run has got to. Called after each phase, so that the app
+    /// closing, or being force-quit, costs at most the phase in progress.
+    pub fn save_state(&self, run: &Run) {
+        let Ok(text) = serde_json::to_string(&run.snapshot()) else { return };
+        let path = self.state_path(&run.id);
+        let temporary = path.with_extension("tmp");
+        // Written beside it and renamed, so a file that exists is always whole.
+        if fs::write(&temporary, text).is_ok() {
+            let _ = fs::rename(&temporary, &path);
+        }
+    }
+
+    /// Where a saved run had got to, if that was kept.
+    pub fn read_state(&self, run_id: &str) -> Option<Snapshot> {
+        let text = fs::read_to_string(self.state_path(run_id)).ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// Every saved run, newest first.
@@ -147,6 +208,7 @@ fn summarise(path: &Path) -> Option<RunSummary> {
         rounds: 0,
         tokens: 0,
         cost_usd: 0.0,
+        models: head.models,
     };
     for event in &events {
         match &event.kind {
@@ -181,12 +243,16 @@ mod tests {
         Run::new(project, request, Arc::new(|_: &str, _: &Event| {}))
     }
 
+    fn models() -> RunModels {
+        RunModels::of(&Settings::default())
+    }
+
     #[test]
     fn a_run_is_written_line_by_line_and_read_back_whole() {
         let folder = tempfile::tempdir().unwrap();
         let store = RunStore::new(folder.path());
         let run = quiet_run("/code/app", "Add tests");
-        store.start(&run);
+        store.start(&run, models());
 
         let events = [
             Event { seq: 0, agent: None, kind: EventKind::RunState { state: RunState::Planning } },
@@ -219,6 +285,9 @@ mod tests {
 
         let listed = store.list();
         assert_eq!(listed.len(), 1);
+        let how = listed[0].models.as_ref().expect("how the run was set up is kept");
+        assert_eq!(how.preset.as_deref(), Some("balanced"));
+        assert_eq!(how.planner.model, "opus");
         assert_eq!(listed[0].state, "done", "the last state it reached");
         assert_eq!(listed[0].rounds, 1);
         assert_eq!(listed[0].tokens, 1050);
@@ -230,7 +299,7 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let store = RunStore::new(folder.path());
         let run = quiet_run("/code/app", "Half a run");
-        store.start(&run);
+        store.start(&run, models());
         store.append(&run.id, &Event { seq: 0, agent: None, kind: EventKind::Round { open: true } });
         // As if the app were killed in the middle of writing a line.
         let mut file = OpenOptions::new().append(true).open(store.path(&run.id)).unwrap();
@@ -242,12 +311,28 @@ mod tests {
     }
 
     #[test]
+    fn where_a_run_got_to_is_saved_beside_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = RunStore::new(folder.path());
+        let run = quiet_run("/code/app", "Add tests");
+        store.start(&run, models());
+        assert!(store.read_state(&run.id).is_none(), "nothing saved yet");
+
+        store.save_state(&run);
+        let state = store.read_state(&run.id).expect("saved after a phase");
+        assert!(state.round.is_none());
+        assert_eq!(state.rounds_started, 0);
+        // The run's own file is untouched by this.
+        assert_eq!(store.read(&run.id).unwrap().1.len(), 0);
+    }
+
+    #[test]
     fn runs_are_listed_newest_first_and_an_unknown_one_says_so() {
         let folder = tempfile::tempdir().unwrap();
         let store = RunStore::new(folder.path());
         for request in ["first", "second"] {
             let run = quiet_run("/code/app", request);
-            store.start(&run);
+            store.start(&run, models());
             // Files a second apart, so the order is not down to chance.
             std::thread::sleep(std::time::Duration::from_millis(1100));
         }

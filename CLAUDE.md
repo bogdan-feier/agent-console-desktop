@@ -19,13 +19,15 @@ resolver merges them. The user applies or discards each round.
   - `settings.rs`: what the Settings window changes (model, effort and turn limit per role, budget, allowed commands, web search, MCP, number of workers, notes for every agent), presets, and the checks on each value.
   - `changes.rs`: a git diff for the reviewer's prompt (shared-folder mode).
   - `checks.rs`: runs the project's own check command on the merged changes. No agent involved.
+  - `project.rs`: reads a project's own files to suggest the commands its agents will need.
   - `worktrees.rs`: every git operation for a round: create, commit, merge (with conflicts
     left in place for the resolver), the per-file diff, apply, commit, remove. Nothing else
     runs git.
   - `orchestrator.rs`: the plan, build, review flow.
   - `claude/`: the only code that starts or parses the `claude` program.
 - `src-tauri/` is the app shell: commands the page calls, and event forwarding. Keep it thin.
-  - `store.rs`: saves every run to `runs/<id>.jsonl` so it can be read again after a restart.
+  - `store.rs`: saves every run to `runs/<id>.jsonl`, and where it got to in
+    `runs/<id>.state.json`, so a run can be read, and usually continued, after a restart.
 - `ui/` is the page: plain HTML, CSS and JavaScript. No framework, no build step, no CDN.
   - `app.js` wires it together; `ui/parts/*.js` are ES modules it imports, one per area of
     the window (`turns.js`, `cards.js`, `controls.js`, `decisions.js`, `changes.js`,

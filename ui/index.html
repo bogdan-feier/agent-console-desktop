@@ -151,8 +151,12 @@
       <section class="settings-section" aria-labelledby="permissions-title">
         <h3 id="permissions-title">Permissions</h3>
         <p class="hint">Agents run with nobody there to click "allow", so anything not allowed here is refused. Only workers can edit files, and only in their own copy of the project.</p>
-        <label for="commands">Shell commands the workers and the reviewer may run, one per line</label>
+        <div class="field-row">
+          <label for="commands">Shell commands the workers and the reviewer may run, one per line</label>
+          <button type="button" id="suggest-commands" title="Look at the project's files and offer the usual commands for that kind of project">Suggest from this project</button>
+        </div>
         <textarea id="commands" rows="7" spellcheck="false"></textarea>
+        <p class="hint" id="suggest-note"></p>
         <p class="hint">A <code>*</code> at the end matches the rest of the command: <code>npm test *</code> also allows <code>npm test -- --watch=false</code>. Leave the box empty to take the shell away from them. Rules in the project's own <code>.claude/settings.json</code> still apply on top.</p>
         <label class="switch">
           <input type="checkbox" id="web-access">

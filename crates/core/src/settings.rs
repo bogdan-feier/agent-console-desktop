@@ -361,6 +361,18 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
     fs::rename(&temporary, path).map_err(problem)
 }
 
+impl Settings {
+    /// The preset these settings' models, effort and turn limits match, if any.
+    /// Saved with a run so the Runs window can say how it was set up.
+    pub fn matching_preset(&self) -> Option<Preset> {
+        [Preset::Lean, Preset::Balanced, Preset::Thorough].into_iter().find(|&preset| {
+            let other = Settings::preset(preset);
+            (&self.dispatcher, &self.planner, &self.worker, &self.reviewer)
+                == (&other.dispatcher, &other.planner, &other.worker, &other.reviewer)
+        })
+    }
+}
+
 /// Where the settings live: one general set, plus a set of its own for any project
 /// that wants one.
 ///
@@ -447,6 +459,18 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_know_which_preset_they_match() {
+        assert_eq!(Settings::default().matching_preset(), Some(Preset::Balanced));
+        assert_eq!(Settings::preset(Preset::Thorough).matching_preset(), Some(Preset::Thorough));
+        // Notes and commands are the user's own and say nothing about the preset.
+        let noted = Settings { notes: "mine".into(), ..Settings::preset(Preset::Lean) };
+        assert_eq!(noted.matching_preset(), Some(Preset::Lean));
+        // A model picked by hand matches none of them.
+        let mixed = Settings { worker: RoleSettings::new("opus", None), ..Settings::default() };
+        assert_eq!(mixed.matching_preset(), None);
+    }
 
     #[test]
     fn a_project_can_have_settings_of_its_own() {

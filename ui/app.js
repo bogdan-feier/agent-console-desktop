@@ -239,10 +239,16 @@ $("discard").addEventListener("click", () => roundAction("discard_changes"));
 wireSettings();
 wireChanges();
 wirePrompts();
-wireHistory(async (run) => {
+wireHistory(async (run, opened) => {
   app.runFolder = run.project_dir;
   await setFolder(run.project_dir);
-  await show(run.id, true);
+  await show(run.id, !opened.resumable);
+  if (opened.resumable) {
+    addToThread(el("div", "note", "Picked up where this run left off. The agents remember the conversation."));
+  } else {
+    addToThread(el("div", "note", "This run can be read but not continued"
+      + (opened.why ? ", because " + opened.why : "") + "."));
+  }
 });
 
 // --- Start-up ---------------------------------------------------------------

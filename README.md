@@ -99,8 +99,12 @@ appears when it is needed. The strip at the top shows which step of the round yo
 starts over with fresh agents (apply or discard the open round first).
 
 Every run is saved as it happens. **Runs** in the top bar lists them all with what each one
-used, and opens any of them again. A run from an earlier launch opens read only: its agents'
-sessions and worktrees went with the app that made them.
+used and how it was set up (the preset, or the models), so you can see whether Lean really is
+cheaper for your kind of work. Opening one picks it up where it left off: the agents remember
+the conversation, and an open round can still be reviewed, applied or discarded, even after
+the app has been closed and reopened. A run opens read only when something it needs is gone
+(the project folder has moved, or the workers' copies have been cleared out of the system's
+temporary folder, which macOS does after a few days); it then says which.
 
 Prompts you type often can be kept: the **Save this prompt** chip above the message box
 keeps what you typed, and the chips put it back.
@@ -159,6 +163,10 @@ refused. You choose:
   type them (`npm test`). A `*` at the end matches the rest of the command. A lone `*`, which
   would allow everything, is refused. An empty list takes the shell away from them. Rules in
   the project's own `.claude/settings.json` still apply on top.
+  **Suggest from this project** reads the project's own files (`Cargo.toml`, `package.json`
+  and its scripts, `pyproject.toml`, `go.mod`, `Makefile`) and offers the commands that kind
+  of project usually needs, plus a check command if there is an obvious one. They go into the
+  boxes for you to look over; nothing is allowed until you save.
 - **Web search** for the dispatcher and the planner (off by default). Only those two get it:
   they cannot edit files or run commands, so a web page with hidden instructions cannot make
   them change your project.
@@ -259,7 +267,8 @@ that.
 | How `claude` is started, or how its output is read | `crates/core/src/claude/` |
 | How clashes between workers are merged | `crates/core/src/worktrees.rs`, `resolve` in `orchestrator.rs` |
 | How the project's own checks are run | `crates/core/src/checks.rs` |
-| How runs are saved and listed | `src-tauri/src/store.rs` |
+| How runs are saved, listed and picked up again | `src-tauri/src/store.rs`, `Run::snapshot` and `Run::from_saved` in `run.rs` |
+| What commands a kind of project needs | `crates/core/src/project.rs` |
 | What the page looks like | `ui/styles.css`, `ui/index.html` |
 | What the page does | `ui/app.js` and the modules in `ui/parts/` |
 | Window size, app name, icon | `src-tauri/tauri.conf.json`, `assets/app-icon.png` |

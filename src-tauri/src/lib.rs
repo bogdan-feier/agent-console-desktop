@@ -20,12 +20,13 @@ use agent_console_core::config::{self, AuthMode, Role, Task, PLANNER_ID};
 use agent_console_core::orchestrator::{
     can_approve, can_chat, can_finish_round, can_message, can_send_back, supervised, Isolation,
 };
+use agent_console_core::project;
 use agent_console_core::run::EventSink;
 use agent_console_core::settings::{self, Preset, Settings, SharedSettings};
-use agent_console_core::worktrees::FileChange;
+use agent_console_core::worktrees::{FileChange, Workspace};
 use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run};
 use serde::{Deserialize, Serialize};
-use store::{RunStore, RunSummary};
+use store::{RunModels, RunStore, RunSummary};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{oneshot, OnceCell};
@@ -152,6 +153,22 @@ struct Limits {
     max_notes: usize,
 }
 
+/// What opening a saved run tells the window.
+#[derive(Serialize)]
+struct Opened {
+    /// False when the run can only be read.
+    resumable: bool,
+    /// Why not, in a few words, when it cannot.
+    why: Option<String>,
+}
+
+impl Opened {
+    fn of(run: &Run, why: Option<&str>) -> Opened {
+        let resumable = run.resumable();
+        Opened { resumable, why: if resumable { None } else { why.map(str::to_string) } }
+    }
+}
+
 /// What the Changes window shows.
 #[derive(Serialize)]
 struct RoundChanges {
@@ -206,6 +223,13 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
             max_notes: settings::MAX_NOTES_LENGTH,
         },
     }
+}
+
+/// What this project looks like it needs its agents to be able to run. Offered in
+/// the Settings window; nothing is allowed until the user saves it.
+#[tauri::command]
+fn project_suggestions(project_dir: String) -> project::Suggestions {
+    project::suggestions(&expand_home(project_dir.trim()))
 }
 
 /// Switch to a project: from now on its own settings are used, if it has a set.
@@ -268,7 +292,8 @@ async fn start_run(
     let sink = window_sink(app, Some(state.runs_on_disk.clone()));
     let run = Run::new(project_dir, message.trim(), sink);
     can_message(&run, &message)?;
-    state.runs_on_disk.start(&run);
+    let settings = state.settings.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    state.runs_on_disk.start(&run, RunModels::of(&settings));
 
     let mut runs = state.runs();
     // One run at a time: stop whatever was still going.
@@ -278,7 +303,7 @@ async fn start_run(
     runs.insert(run.id.clone(), ActiveRun { run: run.clone(), orchestrator: orchestrator.clone() });
     drop(runs);
 
-    dispatch(run.clone(), orchestrator, message, mode);
+    dispatch(state.runs_on_disk.clone(), run.clone(), orchestrator, message, mode);
     Ok(run.id.clone())
 }
 
@@ -287,14 +312,20 @@ async fn start_run(
 fn send(state: State<'_, AppState>, run_id: String, message: String, mode: SendMode) -> CommandResult<()> {
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_message(&run, &message)?;
-    dispatch(run, orchestrator, message, mode);
+    dispatch(state.runs_on_disk.clone(), run, orchestrator, message, mode);
     Ok(())
 }
 
-fn dispatch(run: Arc<Run>, orchestrator: Orchestrator, message: String, mode: SendMode) {
+fn dispatch(
+    store: Arc<RunStore>,
+    run: Arc<Run>,
+    orchestrator: Orchestrator,
+    message: String,
+    mode: SendMode,
+) {
     let message = message.trim().to_string();
     let task_run = run.clone();
-    spawn_phase(run, async move {
+    spawn_phase(store, run, async move {
         match mode {
             SendMode::Dispatcher => orchestrator.ask(&task_run, &message).await,
             SendMode::Brainstorm => orchestrator.chat(&task_run, PLANNER_ID, &message).await,
@@ -321,7 +352,9 @@ fn send_message(
     can_chat(&run, &agent, &message)?;
     let message = message.trim().to_string();
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.chat(&task_run, &agent, &message).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move {
+        orchestrator.chat(&task_run, &agent, &message).await
+    });
     Ok(())
 }
 
@@ -333,7 +366,9 @@ fn make_plan(state: State<'_, AppState>, run_id: String, guidance: Option<String
         return Err("Wait until the agents have finished.".to_string());
     }
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.plan(&task_run, guidance.as_deref()).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move {
+        orchestrator.plan(&task_run, guidance.as_deref()).await
+    });
     Ok(())
 }
 
@@ -346,7 +381,7 @@ fn approve_plan(state: State<'_, AppState>, run_id: String, tasks: Vec<Task>) ->
         return Err("The plan needs at least one task.".to_string());
     }
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.build(&task_run, tasks).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move { orchestrator.build(&task_run, tasks).await });
     Ok(())
 }
 
@@ -356,7 +391,11 @@ fn send_back(state: State<'_, AppState>, run_id: String, worker: usize) -> Comma
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_send_back(&run, worker)?;
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.send_back(&task_run, worker).await });
+    spawn_phase(
+        state.runs_on_disk.clone(),
+        run,
+        async move { orchestrator.send_back(&task_run, worker).await },
+    );
     Ok(())
 }
 
@@ -365,7 +404,7 @@ fn review_again(state: State<'_, AppState>, run_id: String) -> CommandResult<()>
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.review(&task_run).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move { orchestrator.review(&task_run).await });
     Ok(())
 }
 
@@ -392,7 +431,9 @@ fn apply_changes(
     can_finish_round(&run)?;
     let message = commit_message.map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.apply(&task_run, message.as_deref()).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move {
+        orchestrator.apply(&task_run, message.as_deref()).await
+    });
     Ok(())
 }
 
@@ -402,18 +443,65 @@ fn recent_runs(state: State<'_, AppState>) -> Vec<RunSummary> {
     state.runs_on_disk.list()
 }
 
-/// Load a saved run so the window can show it again. It cannot be continued.
+/// Load a saved run so the window can show it again, and carry on with it when
+/// everything it needs is still there.
 #[tauri::command]
-async fn open_run(app: AppHandle, state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
-    if state.runs().contains_key(&run_id) {
-        return Ok(());
+async fn open_run(app: AppHandle, state: State<'_, AppState>, run_id: String) -> CommandResult<Opened> {
+    if let Some(run) = state.runs().get(&run_id).map(|active| active.run.clone()) {
+        return Ok(Opened::of(&run, None));
     }
     let (head, events) = state.runs_on_disk.read(&run_id)?;
     let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
     let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);
-    let run = Run::restored(head.id, &head.project_dir, head.request, events, window_sink(app, None));
+
+    // Three things have to be there to carry on: what was saved about the run,
+    // its project, and, if a round was open, its worktrees.
+    let snapshot = state.runs_on_disk.read_state(&run_id);
+    let project_dir = PathBuf::from(&head.project_dir);
+    let mut why = None;
+    let mut snapshot = match (&snapshot, project_dir.is_dir()) {
+        (None, _) => {
+            why = Some("it was saved by a version of the app that did not keep enough to carry on");
+            None
+        }
+        (_, false) => {
+            why = Some("its project folder is no longer where it was");
+            None
+        }
+        (Some(_), true) => snapshot,
+    };
+
+    let mut workspace = None;
+    if let Some(saved) = &snapshot {
+        if let Some(round) = &saved.round {
+            if let Some(kept) = &round.workspace {
+                let opened =
+                    Workspace::reopen(&project_dir, &head.id, saved.rounds_started, kept.workers, &kept.base)
+                        .await;
+                match opened {
+                    Ok(reopened) => workspace = Some(Arc::new(reopened)),
+                    Err(problem) => {
+                        why = Some("the copies of the project its workers used are gone");
+                        let _ = problem;
+                        snapshot = None;
+                    }
+                }
+            }
+        }
+    }
+
+    let run = Run::from_saved(
+        head.id,
+        &head.project_dir,
+        head.request,
+        events,
+        snapshot,
+        workspace,
+        window_sink(app, Some(state.runs_on_disk.clone())),
+    );
+    let opened = Opened::of(&run, why);
     state.runs().insert(run.id.clone(), ActiveRun { run, orchestrator });
-    Ok(())
+    Ok(opened)
 }
 
 #[tauri::command]
@@ -421,7 +509,7 @@ fn discard_changes(state: State<'_, AppState>, run_id: String) -> CommandResult<
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let task_run = run.clone();
-    spawn_phase(run, async move { orchestrator.discard(&task_run).await });
+    spawn_phase(state.runs_on_disk.clone(), run, async move { orchestrator.discard(&task_run).await });
     Ok(())
 }
 
@@ -447,12 +535,16 @@ fn window_sink(app: AppHandle, store: Option<Arc<RunStore>>) -> EventSink {
     })
 }
 
-/// Do one phase in the background so the command can return right away.
-fn spawn_phase<F>(run: Arc<Run>, work: F)
+/// Do one phase in the background so the command can return right away, then
+/// save where the run got to, so it can be picked up again after a restart.
+fn spawn_phase<F>(store: Arc<RunStore>, run: Arc<Run>, work: F)
 where
     F: Future<Output = Result<(), AgentError>> + Send + 'static,
 {
-    tauri::async_runtime::spawn(supervised(run, work));
+    tauri::async_runtime::spawn(async move {
+        supervised(run.clone(), work).await;
+        store.save_state(&run);
+    });
 }
 
 /// Turn a leading `~` into the home folder, as a shell would.
@@ -484,6 +576,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             use_project,
+            project_suggestions,
             save_settings,
             pick_folder,
             start_run,

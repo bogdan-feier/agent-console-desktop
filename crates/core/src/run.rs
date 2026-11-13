@@ -17,6 +17,17 @@ use crate::config::{Review, Task};
 use crate::event::{AgentStatus, Event, EventKind};
 use crate::worktrees::Workspace;
 
+/// Nothing is running after a restart, so a state that means "an agent is busy"
+/// becomes Stopped: the round, if there is one, is still there to deal with.
+fn at_rest(state: RunState) -> RunState {
+    match state {
+        RunState::Chatting | RunState::Planning | RunState::Building | RunState::Reviewing => {
+            RunState::Stopped
+        }
+        settled => settled,
+    }
+}
+
 /// The stages a run moves through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +76,39 @@ pub(crate) struct Round {
     pub(crate) last_reviewed: Option<String>,
 }
 
+/// What has to be kept to pick a run up again after the app has been closed.
+///
+/// The events in the run's file say what happened; this says where the run got
+/// to: which agent sessions to resume, what the round is, and what was planned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub state: RunState,
+    pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub plan_summary: String,
+    /// Agent ID -> the session `claude --resume` continues.
+    pub sessions: HashMap<String, String>,
+    pub rounds_started: usize,
+    pub round: Option<RoundSnapshot>,
+}
+
+/// The open round, if there is one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundSnapshot {
+    pub worker_reports: HashMap<usize, String>,
+    pub review: Option<Review>,
+    pub last_reviewed: Option<String>,
+    /// Enough to find the round's worktrees again: the rest comes from the run
+    /// itself (the project folder, the run's ID, the round number).
+    pub workspace: Option<WorkspaceSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSnapshot {
+    pub base: String,
+    pub workers: usize,
+}
+
 /// The parts of a run that change while it is in progress.
 struct Inner {
     state: RunState,
@@ -105,16 +149,47 @@ impl Run {
         })
     }
 
-    /// Rebuild a run from events that were saved to disk. Nothing can be started
-    /// on it: it exists so that a finished run can be read again later.
-    pub fn restored(
+    /// Where the run has got to, for saving to disk.
+    pub fn snapshot(&self) -> Snapshot {
+        let inner = self.lock();
+        Snapshot {
+            state: inner.state,
+            tasks: inner.tasks.clone(),
+            plan_summary: inner.plan_summary.clone(),
+            sessions: inner.sessions.clone(),
+            rounds_started: inner.rounds_started,
+            round: inner.round.as_ref().map(|round| RoundSnapshot {
+                worker_reports: round.worker_reports.clone(),
+                review: round.review.clone(),
+                last_reviewed: round.last_reviewed.clone(),
+                workspace: round.workspace.as_ref().map(|workspace| WorkspaceSnapshot {
+                    base: workspace.base().to_string(),
+                    workers: workspace.worker_count(),
+                }),
+            }),
+        }
+    }
+
+    /// Rebuild a run from what was saved on disk.
+    ///
+    /// With no snapshot, or with one whose round could not be opened again, the
+    /// run is marked `restored`: it can be read but not continued, because its
+    /// agent sessions or its worktrees are gone. Otherwise it carries on where
+    /// it left off.
+    ///
+    /// A run that was in the middle of something when the app closed comes back
+    /// as `Stopped`: whatever was running died with the app, but an open round
+    /// is still there to apply, discard or review again.
+    pub fn from_saved(
         id: String,
         project_dir: impl Into<PathBuf>,
         request: impl Into<String>,
         events: Vec<Event>,
+        snapshot: Option<Snapshot>,
+        workspace: Option<Arc<Workspace>>,
         sink: EventSink,
     ) -> Arc<Run> {
-        let state = events
+        let last_state = events
             .iter()
             .rev()
             .find_map(|event| match event.kind {
@@ -122,24 +197,44 @@ impl Run {
                 _ => None,
             })
             .unwrap_or(RunState::Ready);
+        let restored = snapshot.is_none();
+        let saved = snapshot.unwrap_or(Snapshot {
+            state: last_state,
+            tasks: Vec::new(),
+            plan_summary: String::new(),
+            sessions: HashMap::new(),
+            rounds_started: 0,
+            round: None,
+        });
+        let round = saved.round.map(|round| Round {
+            workspace,
+            worker_reports: round.worker_reports,
+            review: round.review,
+            last_reviewed: round.last_reviewed,
+        });
         Arc::new(Run {
             id,
             project_dir: project_dir.into(),
             request: request.into(),
-            restored: true,
+            restored,
             sink,
             inner: Mutex::new(Inner {
-                state,
+                state: at_rest(saved.state),
                 events,
-                tasks: Vec::new(),
-                plan_summary: String::new(),
+                tasks: saved.tasks,
+                plan_summary: saved.plan_summary,
                 running_agents: BTreeSet::new(),
-                sessions: HashMap::new(),
-                round: None,
-                rounds_started: 0,
+                sessions: saved.sessions,
+                round,
+                rounds_started: saved.rounds_started,
                 stop_signal: None,
             }),
         })
+    }
+
+    /// True when this run can still be worked on.
+    pub fn resumable(&self) -> bool {
+        !self.restored
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {

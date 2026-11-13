@@ -20,6 +20,7 @@ pub mod claude;
 pub mod config;
 pub mod event;
 pub mod orchestrator;
+pub mod project;
 pub mod run;
 pub mod runner;
 pub mod settings;

@@ -5,7 +5,7 @@
 import { $, el, showProblem } from "./dom.js";
 import { app } from "./state.js";
 import { invoke } from "./tauri.js";
-import { count, plural, STATE_WORDS } from "./words.js";
+import { count, plural, PRESET_WORDS, STATE_WORDS } from "./words.js";
 
 /// Set at start-up: how the page shows a run it has just loaded.
 let onOpen = () => {};
@@ -59,6 +59,12 @@ function runRow(run, widest) {
   const head = el("div", "run-head");
   head.append(el("span", "when", when(run.started_at)), el("span", "where", name));
   if (run.rounds) head.append(el("span", "rounds", plural(run.rounds, "round")));
+  const how = setup(run.models);
+  if (how) {
+    const chip = el("span", "run-setup", how.short);
+    chip.title = how.full;
+    head.append(chip);
+  }
   row.append(head);
   row.append(el("div", "run-request", run.request));
 
@@ -76,14 +82,25 @@ function runRow(run, widest) {
   row.title = run.project_dir;
   row.addEventListener("click", async () => {
     try {
-      await invoke("open_run", { runId: run.id });
+      const opened = await invoke("open_run", { runId: run.id });
       $("history").close();
-      onOpen(run);
+      onOpen(run, opened);
     } catch (error) {
       $("history-notice").textContent = typeof error === "string" ? error : String(error);
     }
   });
   return row;
+}
+
+/// How a run was set up, for comparing one run's usage with another's. Runs saved
+/// before the app kept this have none.
+function setup(models) {
+  if (!models) return null;
+  const role = (chosen) => chosen.model + (chosen.effort ? " at " + chosen.effort + " effort" : "");
+  const full = "Planner " + role(models.planner) + ", workers " + role(models.worker)
+    + ", reviewer " + role(models.reviewer) + ", up to " + plural(models.workers, "worker");
+  const preset = models.preset && (PRESET_WORDS[models.preset] || [])[0];
+  return { short: preset || models.planner.model + " and " + models.worker.model, full };
 }
 
 export function wireHistory(open) {

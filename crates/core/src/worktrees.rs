@@ -143,6 +143,46 @@ impl Workspace {
         Ok(workspace)
     }
 
+    /// The commit every worktree started from. Saved with a run so the round can
+    /// be picked up again after the app is restarted.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    pub fn worker_count(&self) -> usize {
+        self.workers
+    }
+
+    /// Open a round's worktrees again, after a restart, from what was saved about
+    /// them. Everything must still be there: the folders are under the system's
+    /// temporary directory, which macOS clears out after a few days, and the user
+    /// may have removed them by hand.
+    pub async fn reopen(
+        project_dir: &Path,
+        run_id: &str,
+        round: usize,
+        workers: usize,
+        base: &str,
+    ) -> Result<Workspace, String> {
+        let name = format!("{run_id}-round{round}");
+        let workspace = Workspace {
+            project_dir: project_dir.to_path_buf(),
+            root: std::env::temp_dir().join("agent-console").join(&name),
+            base: base.to_string(),
+            branch_prefix: format!("agent-console/{name}"),
+            workers,
+        };
+        for part in workspace.parts() {
+            let dir = workspace.root.join(&part);
+            // A folder that is still a git worktree answers this; a leftover
+            // folder, or none at all, does not.
+            if git(&dir, &["rev-parse", "--is-inside-work-tree"]).await.is_err() {
+                return Err(format!("the copy of the project for {part} is no longer there"));
+            }
+        }
+        Ok(workspace)
+    }
+
     /// "worker-1", "worker-2", ..., "review".
     fn parts(&self) -> Vec<String> {
         let mut parts: Vec<String> = (1..=self.workers).map(|number| format!("worker-{number}")).collect();
@@ -562,6 +602,26 @@ mod tests {
         let applied = workspace.apply().await.unwrap();
         assert_eq!(applied, files(&["a.py"]));
         workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_round_can_be_opened_again_until_its_folders_are_gone() {
+        let project = project();
+        let run = run_id();
+        let workspace = Workspace::create(project.path(), &run, 1, 2).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+
+        // What the app saves about a round is enough to carry on with it.
+        let again = Workspace::reopen(project.path(), &run, 1, workspace.worker_count(), workspace.base())
+            .await
+            .unwrap();
+        assert_eq!(again.merge_into_review(&[1]).await.unwrap(), Merge::Clean);
+        assert_eq!(again.apply().await.unwrap(), files(&["a.py"]));
+
+        workspace.remove().await;
+        let problem = Workspace::reopen(project.path(), &run, 1, 2, workspace.base()).await.unwrap_err();
+        assert!(problem.contains("no longer there"), "{problem}");
     }
 
     #[tokio::test]

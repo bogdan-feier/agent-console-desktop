@@ -15,7 +15,7 @@ reviewer checks all their work merged together. The user applies or discards eac
 ## Layout
 - `crates/core/` is the engine. No Tauri, no UI. Everything here is unit-testable.
   - `config.rs`: default models, permissions, role instructions. Tunables go here as named constants.
-  - `settings.rs`: what the Settings window changes (model and effort per role, budget, MCP), presets.
+  - `settings.rs`: what the Settings window changes (model, effort and turn limit per role, budget, allowed commands, web search, MCP, number of workers, notes for every agent), presets, and the checks on each value.
   - `changes.rs`: a git diff for the reviewer's prompt (shared-folder mode).
   - `worktrees.rs`: every git operation for a round: create, commit, merge, apply, remove.
     Nothing else runs git.

@@ -1,5 +1,7 @@
-//! Settings you change in the app's Settings window: the model and effort for each
-//! role, and the spending cap. They are saved as JSON so they survive a restart.
+//! Settings you change in the app's Settings window: the model, effort and turn limit
+//! for each role, the spending cap, what agents may do (shell commands, web search),
+//! how many workers a plan may use, and notes added to every agent's instructions.
+//! They are saved as JSON so they survive a restart.
 //!
 //! The defaults come from the constants in `config.rs`.
 
@@ -10,12 +12,20 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    DISPATCHER_MODEL, MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_MODEL,
+    CHECK_COMMANDS, DISPATCHER_MODEL, MAX_BUDGET_USD_PER_AGENT, PLANNER_MODEL, REVIEWER_MODEL, WORKER_COUNT,
+    WORKER_MODEL,
 };
 
 /// Highest spending cap the Settings window accepts, in US dollars per agent session.
 pub const MAX_BUDGET_LIMIT_USD: f64 = 1000.0;
+/// Highest turn limit the Settings window accepts for one session.
+pub const MAX_TURNS_LIMIT: u32 = 500;
+/// Longest "notes for every agent" text, in characters. It is sent with every turn
+/// of every agent (mostly from the cache), so it should stay short.
+pub const MAX_NOTES_LENGTH: usize = 4000;
 const MAX_MODEL_NAME_LENGTH: usize = 100;
+const MAX_COMMAND_LENGTH: usize = 200;
+const MAX_COMMANDS: usize = 50;
 
 /// How hard the model thinks before answering. Passed to `claude --effort`.
 /// Higher is slower and uses more of your limits.
@@ -41,7 +51,7 @@ impl Effort {
     }
 }
 
-/// Model and effort for one role.
+/// Model, effort and turn limit for one role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleSettings {
     /// "opus", "sonnet", "haiku", or a full model ID.
@@ -49,11 +59,15 @@ pub struct RoleSettings {
     /// `None` means Claude Code's own default for that model.
     #[serde(default)]
     pub effort: Option<Effort>,
+    /// Most turns one session of this role may take. `None` means the role's default
+    /// (the `*_MAX_TURNS` constants in `config.rs`).
+    #[serde(default)]
+    pub max_turns: Option<u32>,
 }
 
 impl RoleSettings {
     fn new(model: &str, effort: Option<Effort>) -> Self {
-        RoleSettings { model: model.to_string(), effort }
+        RoleSettings { model: model.to_string(), effort, max_turns: None }
     }
 }
 
@@ -90,6 +104,36 @@ pub struct Settings {
     /// server adds its tool descriptions to every turn of every agent, and the agents
     /// here only need file and shell tools.
     pub use_mcp_servers: bool,
+
+    // --- Permissions ---
+    /// Shell commands workers and the reviewer may run, written as you would type them
+    /// (`cargo test`, `npm run lint *`). A `*` matches the rest of the command. Anything
+    /// not on the list is refused, because nobody is there to approve it. An empty list
+    /// takes the shell away from them completely.
+    pub allowed_commands: Vec<String>,
+    /// Let the dispatcher and the planner use web search and fetch web pages. Only these
+    /// two: they cannot edit files or run commands, so a web page that tries to give
+    /// them instructions cannot make them change anything.
+    pub web_access: bool,
+
+    // --- Team and limits ---
+    /// Most workers (and so tasks) one plan may use, from 1 to `WORKER_COUNT`.
+    pub worker_count: usize,
+    /// Turn limit when you message an agent directly. `None` means `CHAT_MAX_TURNS`.
+    pub chat_max_turns: Option<u32>,
+
+    // --- Instructions ---
+    /// Added to every agent's instructions, for rules about this project or how you
+    /// like to work ("use uv, never pip"). Empty adds nothing.
+    pub notes: String,
+}
+
+/// The default list of allowed commands: `CHECK_COMMANDS` without the `Bash(...)` around them.
+pub fn default_commands() -> Vec<String> {
+    CHECK_COMMANDS
+        .iter()
+        .map(|rule| rule.trim_start_matches("Bash(").trim_end_matches(')').to_string())
+        .collect()
 }
 
 impl Default for Settings {
@@ -126,7 +170,19 @@ impl Settings {
                 Some(10.0),
             ),
         };
-        Settings { dispatcher, planner, worker, reviewer, max_budget_usd: budget, use_mcp_servers: false }
+        Settings {
+            dispatcher,
+            planner,
+            worker,
+            reviewer,
+            max_budget_usd: budget,
+            use_mcp_servers: false,
+            allowed_commands: default_commands(),
+            web_access: false,
+            worker_count: WORKER_COUNT,
+            chat_max_turns: None,
+            notes: String::new(),
+        }
     }
 }
 
@@ -144,7 +200,8 @@ pub fn current(shared: &SharedSettings) -> Settings {
 }
 
 impl Settings {
-    /// Check the settings and tidy them (trim model names). Errors are shown to the user.
+    /// Check the settings and tidy them (trim names and commands, drop empty lines).
+    /// Errors are shown to the user.
     pub fn validated(mut self) -> Result<Settings, String> {
         for (label, role) in [
             ("Dispatcher", &mut self.dispatcher),
@@ -154,7 +211,36 @@ impl Settings {
         ] {
             role.model = role.model.trim().to_string();
             check_model(&role.model).map_err(|problem| format!("{label}: {problem}"))?;
+            check_turns(role.max_turns).map_err(|problem| format!("{label}: {problem}"))?;
         }
+        check_turns(self.chat_max_turns).map_err(|problem| format!("Direct messages: {problem}"))?;
+
+        if !(1..=WORKER_COUNT).contains(&self.worker_count) {
+            return Err(format!("The number of workers must be from 1 to {WORKER_COUNT}."));
+        }
+
+        let mut commands: Vec<String> = Vec::new();
+        for command in &self.allowed_commands {
+            let command = command.trim().to_string();
+            if command.is_empty() || commands.contains(&command) {
+                continue;
+            }
+            check_command(&command)?;
+            commands.push(command);
+        }
+        if commands.len() > MAX_COMMANDS {
+            return Err(format!("Allow at most {MAX_COMMANDS} commands."));
+        }
+        self.allowed_commands = commands;
+
+        self.notes = self.notes.trim().to_string();
+        if self.notes.chars().count() > MAX_NOTES_LENGTH {
+            return Err(format!(
+                "Notes for every agent can be at most {MAX_NOTES_LENGTH} characters: they are \
+                 sent with every turn of every agent."
+            ));
+        }
+
         if let Some(budget) = self.max_budget_usd {
             if !(budget > 0.0 && budget <= MAX_BUDGET_LIMIT_USD) {
                 return Err(format!(
@@ -165,6 +251,35 @@ impl Settings {
         }
         Ok(self)
     }
+}
+
+/// `None` (the role's default) or a number from 1 to `MAX_TURNS_LIMIT`.
+fn check_turns(turns: Option<u32>) -> Result<(), String> {
+    match turns {
+        Some(turns) if !(1..=MAX_TURNS_LIMIT).contains(&turns) => {
+            Err(format!("the turn limit must be from 1 to {MAX_TURNS_LIMIT}, or empty for the default."))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// An allowed command becomes a permission rule, `Bash(<command>)`, and all the rules
+/// are passed to `claude` as one comma-separated list. So a command must not contain
+/// a comma or brackets (they would break the list or the rule), nor a line break.
+/// A lone `*` would allow every command, which is too much for agents that run
+/// unattended.
+fn check_command(command: &str) -> Result<(), String> {
+    let problem = |why: &str| Err(format!("Allowed command \"{command}\": {why}"));
+    if command.chars().count() > MAX_COMMAND_LENGTH {
+        return problem("too long.");
+    }
+    if command.contains([',', '(', ')', '\n', '\r']) {
+        return problem("commas and brackets cannot be used.");
+    }
+    if command.trim_matches(|c: char| c == '*' || c.is_whitespace()).is_empty() {
+        return problem("this would allow every command. Name the program, for example \"npm test *\".");
+    }
+    Ok(())
 }
 
 /// Model names become a command-line argument, so only allow the characters
@@ -309,6 +424,58 @@ mod tests {
         assert_eq!(settings.planner.model, "sonnet");
         assert_eq!(settings.worker, Settings::default().worker);
         assert!(!settings.use_mcp_servers);
+        assert_eq!(settings.allowed_commands, default_commands(), "new fields take their defaults");
+        assert_eq!(settings.worker_count, WORKER_COUNT);
+    }
+
+    #[test]
+    fn allowed_commands_are_tidied_and_checked() {
+        let mut settings = Settings {
+            allowed_commands: vec![
+                "  npm test  ".into(),
+                "".into(),
+                "npm test".into(),
+                "npm run lint *".into(),
+            ],
+            ..Settings::default()
+        };
+        let tidy = settings.clone().validated().unwrap();
+        assert_eq!(tidy.allowed_commands, ["npm test", "npm run lint *"]);
+
+        for bad in ["*", " * ", "npm test, rm -rf ~", "Bash(rm)", "a\nb"] {
+            settings.allowed_commands = vec![bad.to_string()];
+            assert!(settings.clone().validated().is_err(), "{bad:?} should be refused");
+        }
+        settings.allowed_commands = Vec::new();
+        assert!(settings.validated().is_ok(), "an empty list takes the shell away");
+    }
+
+    #[test]
+    fn the_default_commands_are_the_check_commands() {
+        let commands = default_commands();
+        assert_eq!(commands.len(), CHECK_COMMANDS.len());
+        assert!(commands.contains(&"cargo test *".to_string()));
+        assert!(Settings::default().validated().is_ok());
+    }
+
+    #[test]
+    fn team_size_turns_and_notes_are_checked() {
+        let mut settings = Settings::default();
+        for bad in [0, WORKER_COUNT + 1] {
+            settings.worker_count = bad;
+            assert!(settings.clone().validated().is_err(), "{bad} workers");
+        }
+        settings.worker_count = 1;
+        settings.planner.max_turns = Some(0);
+        assert!(settings.clone().validated().is_err());
+        settings.planner.max_turns = Some(40);
+        settings.chat_max_turns = Some(MAX_TURNS_LIMIT + 1);
+        assert!(settings.clone().validated().is_err());
+        settings.chat_max_turns = None;
+        settings.notes = "x".repeat(MAX_NOTES_LENGTH + 1);
+        assert!(settings.clone().validated().is_err());
+        settings.notes = "  Use uv.  ".into();
+        assert_eq!(settings.validated().unwrap().notes, "Use uv.");
     }
 
     #[test]

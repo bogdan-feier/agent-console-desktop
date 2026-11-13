@@ -192,8 +192,8 @@ impl AgentRunner for ClaudeRunner {
 /// A readable explanation of why a session ended with an error.
 fn describe_failure(result: &ResultLine) -> String {
     match result.subtype.as_str() {
-        "error_max_turns" => "Stopped at this agent's turn limit (the *_MAX_TURNS constants in \
-                              config.rs). Send it a message to let it continue."
+        "error_max_turns" => "Stopped at this agent's turn limit (Settings, Team and limits). \
+                              Send it a message to let it continue, or raise the limit."
             .to_string(),
         "error_max_budget_usd" => "Stopped at the spending cap from Settings. Send it a message to \
                                    let it continue, or raise the cap."

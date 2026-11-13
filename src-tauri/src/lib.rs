@@ -106,6 +106,22 @@ struct AppInfo {
     default_settings: Settings,
     /// The ready-made combinations offered in the Settings window.
     presets: Vec<PresetInfo>,
+    /// What an empty field in the Settings window falls back to, and the allowed ranges.
+    limits: Limits,
+}
+
+/// Shown in the Settings window as the placeholder of each turn-limit field and as
+/// the ranges the fields accept.
+#[derive(Serialize)]
+struct Limits {
+    dispatcher_turns: u32,
+    planner_turns: u32,
+    worker_turns: u32,
+    reviewer_turns: u32,
+    chat_turns: u32,
+    max_turns: u32,
+    max_workers: usize,
+    max_notes: usize,
 }
 
 /// What the page receives for every event: which run it belongs to, and the event.
@@ -143,6 +159,16 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
             .into_iter()
             .map(|preset| PresetInfo { preset, settings: Settings::preset(preset) })
             .collect(),
+        limits: Limits {
+            dispatcher_turns: config::DISPATCHER_MAX_TURNS,
+            planner_turns: config::PLANNER_MAX_TURNS,
+            worker_turns: config::WORKER_MAX_TURNS,
+            reviewer_turns: config::REVIEWER_MAX_TURNS,
+            chat_turns: config::CHAT_MAX_TURNS,
+            max_turns: settings::MAX_TURNS_LIMIT,
+            max_workers: config::WORKER_COUNT,
+            max_notes: settings::MAX_NOTES_LENGTH,
+        },
     }
 }
 

@@ -215,6 +215,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
   border-radius: var(--radius); display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
 .card[data-status=idle] { border-top-color: var(--line); }
+.card.off { opacity: 0.55; }
 .card header { padding: 10px 12px 8px; display: grid; gap: 2px; border-bottom: 1px solid var(--line); }
 .card .title-row { display: flex; align-items: center; gap: 8px; }
 .card h2 { margin: 0; font-size: 15px; white-space: nowrap; }
@@ -243,31 +244,41 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
 .card .message-form textarea:focus { height: 72px; overflow: auto; }
 .card .message-form button { padding: 6px 11px; font-size: 14px; }
 
-/* Settings window */
+/* Settings window: a fixed head and footer around a body that scrolls */
 dialog {
-  border: 1px solid var(--line); border-radius: 12px; padding: 0; width: min(640px, 92vw);
+  border: 1px solid var(--line); border-radius: 12px; padding: 0; width: min(720px, 92vw);
   background: var(--surface); color: var(--ink);
 }
 dialog::backdrop { background: rgba(10, 14, 20, 0.45); }
-dialog form { padding: 18px 20px 16px; display: grid; gap: 14px; }
+dialog form { display: flex; flex-direction: column; max-height: 88vh; }
+.dialog-head { padding: 18px 22px 12px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
 dialog h2 { margin: 0; font-size: 18px; }
-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.dialog-body { overflow-y: auto; padding: 4px 22px 8px; }
+.settings-section { display: grid; gap: 10px; padding: 16px 0 18px; border-bottom: 1px solid var(--line); }
+.settings-section:last-child { border-bottom: none; }
+.settings-section h3 { margin: 0; font-size: 15px; }
+.settings-section textarea { font-family: var(--mono); font-size: 13px; }
+#notes { font-family: var(--sans); font-size: 14px; }
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: -4px; }
 .presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .presets-label { font-size: 13px; color: var(--muted); margin-right: 2px; }
-.settings-grid { display: grid; grid-template-columns: 110px 1fr 150px; gap: 8px 10px; align-items: center; }
-.settings-grid select { width: 100%; }
+.settings-grid { display: grid; grid-template-columns: 96px 1fr 132px 92px; gap: 8px 10px; align-items: center; }
+.settings-grid select, .settings-grid input { width: 100%; }
 .grid-head { font-size: 13px; color: var(--muted); }
 .settings-grid .role { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .settings-grid .role::before { content: ""; width: 4px; align-self: stretch; border-radius: 2px; background: var(--hue); }
-.model-pick { display: flex; gap: 6px; }
+.model-pick { display: flex; gap: 6px; min-width: 0; }
 .model-pick select { flex: 1; }
 .model-pick input:not([hidden]) { flex: 1.4; min-width: 0; font-family: var(--mono); font-size: 13px; }
 select { background: var(--sunken); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; min-width: 0; }
-.budget input { width: 140px; }
-.mcp-switch { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); margin: 0; }
-.mcp-switch input { margin-top: 3px; }
-.mcp-switch .hint { display: block; }
-.dialog-actions { display: flex; gap: 8px; }
+.field-row { display: flex; align-items: center; gap: 12px; }
+.field-row label { margin: 0; flex: 1; font-size: 14px; color: var(--ink); }
+.field-row input, .field-row select { width: 120px; flex: none; }
+.switch { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); margin: 0; }
+.switch input { margin-top: 3px; }
+.switch .hint { display: block; }
+.dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 22px 16px; border-top: 1px solid var(--line); }
+.dialog-actions .problem-line { flex: 1 0 100%; }
 .dialog-actions .spacer { flex: 1; }
 
 /* Narrow windows: stack everything */

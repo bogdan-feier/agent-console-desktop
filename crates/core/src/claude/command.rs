@@ -51,7 +51,7 @@ pub fn build_args(
     push(&mut args, "--tools", &spec.tools.join(","));
     push(&mut args, "--allowedTools", &spec.allowed.join(","));
     // Keeps Claude Code's normal system prompt and adds this agent's role on top.
-    push(&mut args, "--append-system-prompt", spec.instructions);
+    push(&mut args, "--append-system-prompt", &spec.instructions);
     push(&mut args, "--max-turns", &spec.max_turns.to_string());
     if let Some(budget) = spec.max_budget_usd {
         push(&mut args, "--max-budget-usd", &budget.to_string());

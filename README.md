@@ -113,7 +113,10 @@ temporary folder, not in your project.
 
 ## Settings
 
-**Start from** fills everything in with one of three presets:
+The Settings window has four sections.
+
+**Models and limits.** **Start from** fills this section in with one of three presets
+(the other sections stay as they are):
 
 | Preset | Dispatcher | Planner | Workers | Reviewer | Cap per session |
 |---|---|---|---|---|---|
@@ -126,10 +129,37 @@ You can then change any of them. For each role you set:
 - **Model:** Opus, Sonnet, Haiku, or any model ID you type under "Other".
 - **Effort:** how hard the model thinks before answering (Low to Max). "Default" leaves it to
   Claude Code. Higher effort is slower and uses more of your limits.
+- **Turn limit:** the most replies one session may take before it stops. Empty means the
+  default shown in grey (8 for the dispatcher, 30 for the planner and the reviewer, 60 for
+  workers).
 
-It also sets the spending cap per agent session, and whether agents get your MCP servers
-(off by default). Changes apply to the next agent that
-starts, even in the middle of a run. They are saved in
+Below the roles: the turn limit when you message an agent directly (20 by default), and the
+spending cap per agent session.
+
+**Permissions.** Agents run with nobody there to click "allow", so anything not allowed is
+refused. You choose:
+
+- **Shell commands** the workers and the reviewer may run, one per line, written as you would
+  type them (`npm test`). A `*` at the end matches the rest of the command. A lone `*`, which
+  would allow everything, is refused. An empty list takes the shell away from them. Rules in
+  the project's own `.claude/settings.json` still apply on top.
+- **Web search** for the dispatcher and the planner (off by default). Only those two get it:
+  they cannot edit files or run commands, so a web page with hidden instructions cannot make
+  them change your project.
+- **MCP servers** for every agent (off by default, because each server's tool list is sent on
+  every turn).
+
+Only workers can ever edit files, and only in their own copy of the project; that is not a
+setting.
+
+**Team.** The most workers one plan may use, from 1 to 3. Fewer means smaller plans and less
+usage.
+
+**Notes for every agent.** Text added to every agent's instructions, for rules about the
+project or how you like to work ("Use uv, never pip"). It is sent on every turn, mostly from
+the cache, so keep it short (at most 4000 characters).
+
+Changes apply to the next agent that starts, even in the middle of a run. They are saved in
 `~/Library/Application Support/dev.agentconsole.desktop/settings.json`. The starting
 defaults are the constants at the top of `crates/core/src/config.rs`.
 
@@ -171,8 +201,7 @@ that.
   session and only gets what changed since the first.
 - **Economical instructions.** Every agent is told to search before reading, read only the
   parts of files it needs, and not re-read what it has already seen.
-- **Limits.** Each session has a turn limit (`*_MAX_TURNS` in `config.rs`) and the spending
-  cap from Settings. An agent that stops at a limit keeps its session: send it a message and
+- **Limits.** Each session has a turn limit and the spending cap, both from Settings. An agent that stops at a limit keeps its session: send it a message and
   it continues where it stopped.
 - **Explicit effort.** The presets set an effort level for every role instead of leaving it to
   Claude Code's default, so you know what you are getting.
@@ -195,7 +224,7 @@ that.
 
 | To change | Edit |
 |---|---|
-| Default models and cap, turn limits, allowed shell commands, role instructions | `crates/core/src/config.rs` |
+| Default models and cap, default turn limits and shell commands, role instructions | `crates/core/src/config.rs` |
 | What the Settings window can change, the presets, and how it is saved | `crates/core/src/settings.rs` |
 | What goes into the reviewer's prompt about the changes | `crates/core/src/changes.rs` |
 | The order agents run in | `crates/core/src/orchestrator.rs` |
@@ -218,8 +247,8 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 
 - **Check the file lists before you approve.** Tasks that share a file will clash when
   their work is merged.
-- **Shell commands are limited.** Agents may run the commands in `CHECK_COMMANDS`
-  (`config.rs`) plus whatever the project's `.claude/settings.json` allows. Everything
+- **Shell commands are limited.** Agents may run the commands listed in Settings, under
+  Permissions, plus whatever the project's `.claude/settings.json` allows. Everything
   else is refused and shows up in that agent's steps as "Refused or failed".
 - **Each session has a cap.** A session stops at the spending cap in Settings (5 dollars of
   API-equivalent usage by default). Long conversations with one agent count toward the same
@@ -241,5 +270,5 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 | "Stopped at this agent's turn limit" | Send the agent a message such as "continue" to let it finish, or raise its limit in `config.rs`. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |
 | "Claude could not sign in" in the conversation | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
-| A tool line says "Refused or failed" | The command is not on the allow list. Add it to `CHECK_COMMANDS` or to the project's `.claude/settings.json`. |
+| A tool line says "Refused or failed" | The command is not on the allow list. Add it in Settings, under Permissions, or to the project's `.claude/settings.json`. |
 | Want to see the raw events without the app | `cargo run -p agent-console-core --example plan -- <folder> "<request>"` |

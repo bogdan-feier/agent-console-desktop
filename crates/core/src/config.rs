@@ -46,7 +46,8 @@ pub const PLANNER_MODEL: &str = "opus";
 pub const WORKER_MODEL: &str = "sonnet";
 pub const REVIEWER_MODEL: &str = "sonnet";
 
-/// Most workers a plan can use. The planner uses fewer when the work does not split.
+/// Most workers a plan can ever use (the Settings window can lower it). The planner
+/// uses fewer when the work does not split.
 pub const WORKER_COUNT: usize = 3;
 
 /// Default safety cap per agent session, in US dollars of API-equivalent usage.
@@ -58,10 +59,13 @@ pub const MAX_BUDGET_USD_PER_AGENT: Option<f64> = Some(5.0);
 pub const READ_TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 pub const EDIT_TOOLS: &[&str] = &["Edit", "Write"];
 pub const SHELL_TOOL: &str = "Bash";
+/// Given to the dispatcher and the planner when "web access" is on in Settings.
+pub const WEB_TOOLS: &[&str] = &["WebSearch", "WebFetch"];
 
-/// Shell commands agents may run without asking. Anything else is refused,
-/// unless the project's own `.claude/settings.json` allows it. This is the
-/// same permission-rule syntax Claude Code uses.
+/// The default shell commands agents may run without asking (the Settings window
+/// can change the list). Anything else is refused, unless the project's own
+/// `.claude/settings.json` allows it. This is the same permission-rule syntax
+/// Claude Code uses.
 pub const CHECK_COMMANDS: &[&str] = &[
     "Bash(uv run pytest)",
     "Bash(uv run pytest *)",
@@ -77,8 +81,9 @@ pub const CHECK_COMMANDS: &[&str] = &[
 
 // --- Limits that keep usage down ------------------------------------------------
 
-/// Most assistant turns (one reply, usually with tool calls) a session may take before
-/// it stops. A stopped agent can be told to continue from its message box.
+/// Default for the most assistant turns (one reply, usually with tool calls) a session
+/// may take before it stops; the Settings window can change each one. A stopped agent
+/// can be told to continue from its message box.
 pub const DISPATCHER_MAX_TURNS: u32 = 8;
 pub const PLANNER_MAX_TURNS: u32 = 30;
 pub const WORKER_MAX_TURNS: u32 = 60;
@@ -98,7 +103,7 @@ pub const PARALLEL_START_GAP: Duration = Duration::from_secs(5);
 
 const DISPATCHER_INSTRUCTIONS: &str = "\
 You are the dispatcher, the front desk of a small team working on this one project: a planner
-(brainstorms with the user and writes plans), up to 3 workers (write the code) and a reviewer.
+(brainstorms with the user and writes plans), workers (write the code) and a reviewer.
 You cannot edit files. For each message from the user, choose one route:
 
 - \"answer\": a quick question you can answer yourself after at most a few Grep, Glob or Read
@@ -113,12 +118,12 @@ If you are unsure between brainstorm and plan, choose brainstorm. You are the ch
 use as few tool calls as possible, and do not explore the project for questions you route on.";
 
 const PLANNER_INSTRUCTIONS: &str = "\
-You are the planner in a small team: you plan, up to 3 workers implement, a reviewer checks.
-You cannot edit files. Explore the project with Read, Grep and Glob, then produce a plan.
+You are the planner in a small team: you plan, up to {max_tasks} worker(s) implement, a reviewer
+checks. You cannot edit files. Explore the project with Read, Grep and Glob, then produce a plan.
 
 Rules for the plan:
 - Use ONE task unless the work clearly splits into independent parts of real size. Use at
-  most 3. Every extra task starts another worker, which costs usage.
+  most {max_tasks}. Every extra task starts another worker, which costs usage.
 - Each worker gets its own copy of the project (a git worktree) and their work is merged
   afterwards, so two tasks must never change the same file: that makes the merge fail.
 - Each task goes to a worker that has not seen this conversation. Write instructions that
@@ -149,7 +154,7 @@ Finish with a short report of at most 10 lines: what you changed (file by file),
 you added and their result, and anything you skipped or are unsure about.";
 
 const REVIEWER_INSTRUCTIONS: &str = "\
-You are the reviewer in a small team. Up to 3 workers each did one task of a plan; their work is
+You are the reviewer in a small team. One or more workers each did one task of a plan; their work is
 merged in the folder you are in. You review all of it together. You cannot edit files.
 
 Steps:
@@ -167,8 +172,8 @@ Verdict \"approve\" only if there is nothing that must be fixed. Put each requir
 \"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".";
 
 const PLANNER_CHAT_INSTRUCTIONS: &str = "\
-You are the planner in a small team: you plan, up to 3 workers implement in parallel, a reviewer
-checks. Right now you are brainstorming with the user, before or between plans. You cannot edit
+You are the planner in a small team: you plan, up to {max_tasks} worker(s) implement in parallel,
+a reviewer checks. Right now you are brainstorming with the user, before or between plans. You cannot edit
 files. Look at the project with Read, Grep and Glob when the question needs it, so the
 discussion is grounded in the real code. Discuss approaches and trade-offs, point out risks,
 and ask clarifying questions. Keep replies short and concrete. Do not write out a full plan:
@@ -276,14 +281,14 @@ fn routing_schema() -> Value {
     })
 }
 
-fn plan_schema() -> Value {
+fn plan_schema(max_tasks: usize) -> Value {
     json!({
         "type": "object",
         "properties": {
             "summary": { "type": "string" },
             "tasks": {
                 "type": "array",
-                "maxItems": WORKER_COUNT,
+                "maxItems": max_tasks,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -351,11 +356,12 @@ pub struct AgentSpec {
     pub model: String,
     /// `None` leaves the effort to Claude Code's default.
     pub effort: Option<Effort>,
-    pub instructions: &'static str,
+    /// The role's instructions, plus the user's notes from Settings.
+    pub instructions: String,
     /// Tools the agent can see at all.
-    pub tools: Vec<&'static str>,
+    pub tools: Vec<String>,
     /// Tools and shell commands it may use without asking.
-    pub allowed: Vec<&'static str>,
+    pub allowed: Vec<String>,
     /// When set, the agent's final answer must be JSON matching this schema.
     pub output_schema: Option<Value>,
     /// Spending cap for this session, in US dollars.
@@ -369,6 +375,52 @@ pub struct AgentSpec {
     pub chat: bool,
 }
 
+// --- Building blocks for the specs below ---
+
+/// `["Read", "Grep"]` -> owned strings, so lists from constants and from the settings mix.
+fn names(lists: &[&[&str]]) -> Vec<String> {
+    lists.concat().into_iter().map(String::from).collect()
+}
+
+/// The role's instructions with the user's notes from Settings added at the end.
+/// `{max_tasks}` in the text becomes the number of workers a plan may use.
+fn instructions(role: &str, settings: &Settings) -> String {
+    let mut text = role.replace("{max_tasks}", &settings.worker_count.to_string());
+    if !settings.notes.is_empty() {
+        text.push_str("\n\nNotes from the user for every agent on this project:\n");
+        text.push_str(&settings.notes);
+    }
+    text
+}
+
+/// Read-only tools, plus web search when Settings allows it.
+fn reading_tools(settings: &Settings) -> Vec<String> {
+    let web: &[&str] = if settings.web_access { WEB_TOOLS } else { &[] };
+    names(&[READ_TOOLS, web])
+}
+
+/// The allowed commands from Settings as permission rules: "cargo test" -> "Bash(cargo test)".
+fn command_rules(settings: &Settings) -> Vec<String> {
+    settings.allowed_commands.iter().map(|command| format!("{SHELL_TOOL}({command})")).collect()
+}
+
+/// `extra` plus the shell, when at least one command is allowed. With none allowed the
+/// shell is left out entirely, which also saves its description on every turn.
+fn tools_with_shell(settings: &Settings, extra: &[&str]) -> (Vec<String>, Vec<String>) {
+    let rules = command_rules(settings);
+    let mut tools = names(&[READ_TOOLS, extra]);
+    let mut allowed = tools.clone();
+    if !rules.is_empty() {
+        tools.push(SHELL_TOOL.to_string());
+        allowed.extend(rules);
+    }
+    (tools, allowed)
+}
+
+fn chat_turns(settings: &Settings) -> u32 {
+    settings.chat_max_turns.unwrap_or(CHAT_MAX_TURNS)
+}
+
 /// The dispatcher, the cheap front desk: answers quick questions or routes the message on.
 pub fn dispatcher(settings: &Settings) -> AgentSpec {
     AgentSpec {
@@ -377,12 +429,12 @@ pub fn dispatcher(settings: &Settings) -> AgentSpec {
         label: "Dispatcher".to_string(),
         model: settings.dispatcher.model.clone(),
         effort: settings.dispatcher.effort,
-        instructions: DISPATCHER_INSTRUCTIONS,
-        tools: READ_TOOLS.to_vec(),
-        allowed: READ_TOOLS.to_vec(),
+        instructions: instructions(DISPATCHER_INSTRUCTIONS, settings),
+        tools: reading_tools(settings),
+        allowed: reading_tools(settings),
         output_schema: Some(routing_schema()),
         max_budget_usd: settings.max_budget_usd,
-        max_turns: DISPATCHER_MAX_TURNS,
+        max_turns: settings.dispatcher.max_turns.unwrap_or(DISPATCHER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         chat: true,
     }
@@ -396,12 +448,12 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         label: "Planner".to_string(),
         model: settings.planner.model.clone(),
         effort: settings.planner.effort,
-        instructions: PLANNER_INSTRUCTIONS,
-        tools: READ_TOOLS.to_vec(),
-        allowed: READ_TOOLS.to_vec(),
-        output_schema: Some(plan_schema()),
+        instructions: instructions(PLANNER_INSTRUCTIONS, settings),
+        tools: reading_tools(settings),
+        allowed: reading_tools(settings),
+        output_schema: Some(plan_schema(settings.worker_count)),
         max_budget_usd: settings.max_budget_usd,
-        max_turns: PLANNER_MAX_TURNS,
+        max_turns: settings.planner.max_turns.unwrap_or(PLANNER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
@@ -410,9 +462,9 @@ pub fn planner(settings: &Settings) -> AgentSpec {
 /// The planner while brainstorming with the user: same tools, free-form answers.
 pub fn planner_chat(settings: &Settings) -> AgentSpec {
     AgentSpec {
-        instructions: PLANNER_CHAT_INSTRUCTIONS,
+        instructions: instructions(PLANNER_CHAT_INSTRUCTIONS, settings),
         output_schema: None,
-        max_turns: CHAT_MAX_TURNS,
+        max_turns: chat_turns(settings),
         chat: true,
         ..planner(settings)
     }
@@ -420,18 +472,19 @@ pub fn planner_chat(settings: &Settings) -> AgentSpec {
 
 /// Worker `number`, counting from 1.
 pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
+    let (tools, allowed) = tools_with_shell(settings, EDIT_TOOLS);
     AgentSpec {
         id: format!("worker-{number}"),
         role: Role::Worker,
         label: format!("Worker {number}"),
         model: settings.worker.model.clone(),
         effort: settings.worker.effort,
-        instructions: WORKER_INSTRUCTIONS,
-        tools: [READ_TOOLS, EDIT_TOOLS, &[SHELL_TOOL]].concat(),
-        allowed: [READ_TOOLS, EDIT_TOOLS, CHECK_COMMANDS].concat(),
+        instructions: instructions(WORKER_INSTRUCTIONS, settings),
+        tools,
+        allowed,
         output_schema: None,
         max_budget_usd: settings.max_budget_usd,
-        max_turns: WORKER_MAX_TURNS,
+        max_turns: settings.worker.max_turns.unwrap_or(WORKER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
@@ -440,8 +493,8 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
 /// Worker `number` when the user talks to it directly.
 pub fn worker_chat(settings: &Settings, number: usize) -> AgentSpec {
     AgentSpec {
-        instructions: WORKER_CHAT_INSTRUCTIONS,
-        max_turns: CHAT_MAX_TURNS,
+        instructions: instructions(WORKER_CHAT_INSTRUCTIONS, settings),
+        max_turns: chat_turns(settings),
         chat: true,
         ..worker(settings, number)
     }
@@ -449,18 +502,19 @@ pub fn worker_chat(settings: &Settings, number: usize) -> AgentSpec {
 
 /// The reviewer, which checks all the workers' changes together.
 pub fn reviewer(settings: &Settings) -> AgentSpec {
+    let (tools, allowed) = tools_with_shell(settings, &[]);
     AgentSpec {
         id: REVIEWER_ID.to_string(),
         role: Role::Reviewer,
         label: "Reviewer".to_string(),
         model: settings.reviewer.model.clone(),
         effort: settings.reviewer.effort,
-        instructions: REVIEWER_INSTRUCTIONS,
-        tools: [READ_TOOLS, &[SHELL_TOOL]].concat(),
-        allowed: [READ_TOOLS, CHECK_COMMANDS].concat(),
+        instructions: instructions(REVIEWER_INSTRUCTIONS, settings),
+        tools,
+        allowed,
         output_schema: Some(review_schema()),
         max_budget_usd: settings.max_budget_usd,
-        max_turns: REVIEWER_MAX_TURNS,
+        max_turns: settings.reviewer.max_turns.unwrap_or(REVIEWER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         chat: false,
     }
@@ -469,9 +523,9 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
 /// The reviewer when the user asks it follow-up questions: free-form answers.
 pub fn reviewer_chat(settings: &Settings) -> AgentSpec {
     AgentSpec {
-        instructions: REVIEWER_CHAT_INSTRUCTIONS,
+        instructions: instructions(REVIEWER_CHAT_INSTRUCTIONS, settings),
         output_schema: None,
-        max_turns: CHAT_MAX_TURNS,
+        max_turns: chat_turns(settings),
         chat: true,
         ..reviewer(settings)
     }
@@ -512,7 +566,7 @@ mod tests {
     #[test]
     fn only_workers_can_edit() {
         for spec in all_agents(&defaults()) {
-            let can_edit = spec.tools.contains(&"Edit") || spec.tools.contains(&"Write");
+            let can_edit = spec.tools.iter().any(|tool| tool == "Edit" || tool == "Write");
             assert_eq!(can_edit, spec.role == Role::Worker, "{}", spec.id);
         }
     }
@@ -554,12 +608,62 @@ mod tests {
 
         let reviewer_chat = chat_spec(&settings, "reviewer").unwrap();
         assert!(reviewer_chat.output_schema.is_none());
-        assert!(!reviewer_chat.tools.contains(&"Edit"));
+        assert!(!reviewer_chat.tools.iter().any(|tool| tool == "Edit"));
 
         assert_eq!(chat_spec(&settings, "worker-3").unwrap().id, "worker-3");
         for not_messageable in ["dispatcher", "worker-0", "worker-4", "reviewer-1", "boss", "worker"] {
             assert!(chat_spec(&settings, not_messageable).is_none(), "{not_messageable}");
         }
+    }
+
+    #[test]
+    fn allowed_commands_become_bash_rules_and_none_removes_the_shell() {
+        let mut settings = defaults();
+        settings.allowed_commands = vec!["npm test".into(), "npm run lint *".into()];
+        let spec = worker(&settings, 1);
+        assert!(spec.tools.contains(&"Bash".to_string()));
+        assert!(spec.allowed.contains(&"Bash(npm test)".to_string()));
+        assert!(spec.allowed.contains(&"Bash(npm run lint *)".to_string()));
+        assert!(!spec.allowed.contains(&"Bash(cargo test)".to_string()));
+
+        settings.allowed_commands.clear();
+        for spec in [worker(&settings, 1), reviewer(&settings)] {
+            assert!(!spec.tools.iter().any(|tool| tool == "Bash"), "{}", spec.id);
+            assert!(!spec.allowed.iter().any(|rule| rule.starts_with("Bash")), "{}", spec.id);
+        }
+    }
+
+    #[test]
+    fn web_access_is_only_for_the_agents_that_cannot_change_anything() {
+        let mut settings = defaults();
+        assert!(!planner(&settings).tools.contains(&"WebSearch".to_string()), "off by default");
+        settings.web_access = true;
+        for spec in all_agents(&settings).into_iter().chain([planner_chat(&settings)]) {
+            let has_web = spec.tools.iter().any(|tool| tool == "WebSearch" || tool == "WebFetch");
+            let reads_only = matches!(spec.role, Role::Dispatcher | Role::Planner);
+            assert_eq!(has_web, reads_only, "{}", spec.id);
+        }
+    }
+
+    #[test]
+    fn team_size_turns_and_notes_come_from_the_settings() {
+        let mut settings = defaults();
+        settings.worker_count = 2;
+        settings.worker.max_turns = Some(15);
+        settings.chat_max_turns = Some(5);
+        settings.notes = "Use uv, never pip.".into();
+
+        let plan = planner(&settings);
+        assert!(plan.instructions.contains("Use at\n  most 2."), "{}", plan.instructions);
+        assert!(!plan.instructions.contains("{max_tasks}"));
+        assert_eq!(plan.output_schema.unwrap()["properties"]["tasks"]["maxItems"], 2);
+        assert_eq!(worker(&settings, 1).max_turns, 15);
+        assert_eq!(worker_chat(&settings, 1).max_turns, 5);
+        assert_eq!(reviewer(&settings).max_turns, REVIEWER_MAX_TURNS, "unset means the default");
+        for spec in all_agents(&settings) {
+            assert!(spec.instructions.ends_with("Use uv, never pip."), "{}", spec.id);
+        }
+        assert!(!worker(&defaults(), 1).instructions.contains("Notes from the user"));
     }
 
     #[test]

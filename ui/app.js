@@ -149,7 +149,7 @@ function refreshWelcome() {
   const box = el("div", "welcome");
   box.append(el("h2", "", folder ? "What should the team work on?" : "Start by choosing a project"));
   box.append(el("p", "", folder
-    ? "Ask a question and the dispatcher answers it. Ask for a change and the planner splits it into tasks. Once you approve them, three workers build in separate copies of the project and the reviewer checks their work. Nothing reaches your project until you apply it."
+    ? "Ask a question and the dispatcher answers it. Ask for a change and the planner splits it into tasks. Once you approve them, the workers build in separate copies of the project and the reviewer checks their work. Nothing reaches your project until you apply it."
     : "Pick the folder of a git project in the top left. The team works on that one project."));
   if (folder) {
     const examples = el("div", "examples");
@@ -295,6 +295,7 @@ function clearCards() {
     agent.hasWorked = false;
     setStatus(agent, "idle");
   }
+  refreshTeam();
 }
 
 function setStatus(agent, status) {
@@ -316,8 +317,24 @@ function showTaskTitles() {
     const title = titles[agent.number - 1];
     agent.card.task.textContent = title ? "Task " + agent.number + ": " + title : "No task this round";
     agent.card.task.title = title || "";
+  }
+  refreshTeam();
+}
+
+// Workers above the "most workers per plan" setting sit out; dim their cards while idle.
+function refreshTeam() {
+  for (const agent of Object.values(agents)) {
+    if (agent.role !== "worker") continue;
+    const off = agent.number > settings.worker_count && agent.card.root.dataset.status === "idle";
+    agent.card.root.classList.toggle("off", off);
     const empty = agent.card.log.querySelector(".empty");
-    if (empty && !title) empty.textContent = "The plan has fewer tasks than there are workers, so this one sits out.";
+    if (empty) {
+      empty.textContent = off
+        ? "Not used: Settings allows " + settings.worker_count + (settings.worker_count === 1 ? " worker" : " workers") + " per plan."
+        : agent.card.task.textContent === "No task this round"
+          ? "The plan has fewer tasks than there are workers, so this one sits out."
+          : CARD_EMPTY.worker;
+    }
   }
 }
 
@@ -702,11 +719,12 @@ const SETTINGS_ROWS = [
   ["worker", "Workers", "build-hue"],
   ["reviewer", "Reviewer", "review-hue"],
 ];
+let limits = null; // defaults and ranges from the Rust side, for placeholders and checks
 
 function buildSettingsForm(presets) {
   for (const { preset, settings: values } of presets) {
     const [label, description] = PRESET_WORDS[preset] || [preset, ""];
-    const presetButton = button(label, () => fillSettingsForm(values));
+    const presetButton = button(label, () => fillModelSection(values));
     presetButton.title = description;
     $("presets").append(presetButton);
   }
@@ -735,10 +753,40 @@ function buildSettingsForm(presets) {
     effort.setAttribute("aria-label", label + " effort");
     for (const [value, text] of EFFORT_CHOICES) effort.append(new Option(text, value));
     grid.append(effort);
+
+    // Empty means the role's default, which the placeholder shows.
+    const turns = el("input");
+    turns.type = "number";
+    turns.id = "turns-" + key;
+    turns.min = 1;
+    turns.max = limits.max_turns;
+    turns.step = 1;
+    turns.placeholder = String(limits[key + "_turns"]);
+    turns.setAttribute("aria-label", label + " turn limit, empty for the default of " + limits[key + "_turns"]);
+    grid.append(turns);
   }
+  $("chat-turns").max = limits.max_turns;
+  $("chat-turns").placeholder = String(limits.chat_turns);
+  for (let count = 1; count <= limits.max_workers; count++) {
+    $("worker-count").append(new Option(count === 1 ? "1 worker" : count + " workers", String(count)));
+  }
+  $("notes").maxLength = limits.max_notes;
+  $("notes").addEventListener("input", countNotes);
 }
 
-function fillSettingsForm(values) {
+function countNotes() {
+  const used = $("notes").value.length;
+  $("notes-count").textContent = used + " of " + limits.max_notes + " characters. They are sent with every turn of every agent, mostly from the cache, so shorter is cheaper.";
+}
+
+const turnsText = (value) => (value == null ? "" : String(value));
+function readTurns(id) {
+  const text = $(id).value.trim();
+  return text === "" ? null : Number(text);
+}
+
+// The part a preset changes: models, effort, turn limits and the spending cap.
+function fillModelSection(values) {
   for (const [key] of SETTINGS_ROWS) {
     const model = values[key].model;
     const known = MODEL_CHOICES.some(([value]) => value === model);
@@ -746,10 +794,21 @@ function fillSettingsForm(values) {
     $("model-" + key + "-custom").value = known ? "" : model;
     $("model-" + key + "-custom").hidden = known;
     $("effort-" + key).value = values[key].effort || "";
+    $("turns-" + key).value = turnsText(values[key].max_turns);
   }
+  $("chat-turns").value = turnsText(values.chat_max_turns);
   $("budget").value = values.max_budget_usd ?? "";
-  $("use-mcp").checked = values.use_mcp_servers;
   $("settings-notice").textContent = "";
+}
+
+function fillSettingsForm(values) {
+  fillModelSection(values);
+  $("commands").value = values.allowed_commands.join("\n");
+  $("web-access").checked = values.web_access;
+  $("use-mcp").checked = values.use_mcp_servers;
+  $("worker-count").value = String(values.worker_count);
+  $("notes").value = values.notes;
+  countNotes();
 }
 
 function readSettingsForm() {
@@ -759,11 +818,18 @@ function readSettingsForm() {
     values[key] = {
       model: choice === "other" ? $("model-" + key + "-custom").value.trim() : choice,
       effort: $("effort-" + key).value || null,
+      max_turns: readTurns("turns-" + key),
     };
   }
   const budget = $("budget").value.trim();
   values.max_budget_usd = budget === "" ? null : Number(budget);
+  values.chat_max_turns = readTurns("chat-turns");
   values.use_mcp_servers = $("use-mcp").checked;
+  values.web_access = $("web-access").checked;
+  // The Rust side trims each line and drops empty ones and repeats.
+  values.allowed_commands = $("commands").value.split("\n");
+  values.worker_count = Number($("worker-count").value);
+  values.notes = $("notes").value;
   return values;
 }
 
@@ -776,6 +842,7 @@ $("settings-form").addEventListener("submit", async (submitted) => {
     settings = await invoke("save_settings", { settings: readSettingsForm() });
     $("settings").close();
     refreshModelLabels();
+    refreshTeam();
   } catch (error) { $("settings-notice").textContent = problemText(error); }
 });
 
@@ -785,6 +852,7 @@ $("settings-form").addEventListener("submit", async (submitted) => {
   const info = await invoke("app_info");
   settings = info.settings;
   defaults = info.default_settings;
+  limits = info.limits;
   $("auth-chip").textContent = AUTH_WORDS[info.auth] || info.auth;
   buildSettingsForm(info.presets);
   buildCards(info.agents);

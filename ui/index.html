@@ -73,28 +73,70 @@
   </main>
 </div>
 
-<dialog id="settings">
+<dialog id="settings" aria-labelledby="settings-title">
   <form id="settings-form" method="dialog">
-    <h2>Settings</h2>
-    <p class="hint">Changes apply to the next agent that starts, including in a run that is in progress.</p>
-    <div class="presets" id="presets">
-      <span class="presets-label">Start from</span>
+    <div class="dialog-head">
+      <h2 id="settings-title">Settings</h2>
+      <p class="hint">Changes apply to the next agent that starts, including in a run that is in progress.</p>
     </div>
-    <div class="settings-grid" id="settings-roles">
-      <span class="grid-head"></span><span class="grid-head">Model</span><span class="grid-head">Effort</span>
+
+    <div class="dialog-body">
+      <section class="settings-section" aria-labelledby="models-title">
+        <h3 id="models-title">Models and limits</h3>
+        <div class="presets" id="presets">
+          <span class="presets-label">Start from</span>
+        </div>
+        <p class="hint">A preset fills in this section only; permissions, team and notes stay as they are.</p>
+        <div class="settings-grid" id="settings-roles">
+          <span class="grid-head"></span><span class="grid-head">Model</span><span class="grid-head">Effort</span><span class="grid-head" title="Most replies one session may take before it stops. Empty means the default shown.">Turn limit</span>
+        </div>
+        <div class="field-row">
+          <label for="chat-turns">Turn limit when you message an agent directly</label>
+          <input type="number" id="chat-turns" min="1" step="1">
+        </div>
+        <div class="field-row">
+          <label for="budget">Spending cap per agent session, in US dollars</label>
+          <input type="number" id="budget" min="0.5" max="1000" step="0.5" placeholder="No cap">
+        </div>
+        <p class="hint">The cap counts API-equivalent usage. On a Claude plan login it limits how much of your plan one session can use. An agent that hits a limit stops, and you can tell it to continue.</p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="permissions-title">
+        <h3 id="permissions-title">Permissions</h3>
+        <p class="hint">Agents run with nobody there to click "allow", so anything not allowed here is refused. Only workers can edit files, and only in their own copy of the project.</p>
+        <label for="commands">Shell commands the workers and the reviewer may run, one per line</label>
+        <textarea id="commands" rows="7" spellcheck="false"></textarea>
+        <p class="hint">A <code>*</code> at the end matches the rest of the command: <code>npm test *</code> also allows <code>npm test -- --watch=false</code>. Leave the box empty to take the shell away from them. Rules in the project's own <code>.claude/settings.json</code> still apply on top.</p>
+        <label class="switch">
+          <input type="checkbox" id="web-access">
+          <span>Let the dispatcher and the planner search the web <span class="hint">(they cannot edit or run anything, so a web page cannot make them change your project)</span></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="use-mcp">
+          <span>Give agents my MCP servers <span class="hint">(off saves tokens: every server's tool list is sent on every turn of every agent)</span></span>
+        </label>
+      </section>
+
+      <section class="settings-section" aria-labelledby="team-title">
+        <h3 id="team-title">Team</h3>
+        <div class="field-row">
+          <label for="worker-count">Most workers one plan may use</label>
+          <select id="worker-count"></select>
+        </div>
+        <p class="hint">Fewer workers means smaller plans and less usage. The planner already uses one task unless the work clearly splits.</p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="notes-title">
+        <h3 id="notes-title">Notes for every agent</h3>
+        <label for="notes">Added to every agent's instructions, for example "Use uv, never pip" or "Write comments in English"</label>
+        <textarea id="notes" rows="4"></textarea>
+        <p class="hint" id="notes-count"></p>
+      </section>
     </div>
-    <div class="budget">
-      <label for="budget">Spending cap per agent session, in US dollars</label>
-      <input type="number" id="budget" min="0.5" max="1000" step="0.5" placeholder="No cap">
-      <p class="hint">Counts API-equivalent usage. On a Claude plan login it limits how much of your plan one session can use. Empty means no cap.</p>
-    </div>
-    <label class="mcp-switch">
-      <input type="checkbox" id="use-mcp">
-      <span>Give agents my MCP servers <span class="hint">(off saves tokens: every server's tool list is sent on every turn of every agent)</span></span>
-    </label>
-    <p class="problem-line" id="settings-notice" role="alert"></p>
+
     <div class="dialog-actions">
-      <button type="button" id="settings-reset">Reset to defaults</button>
+      <p class="problem-line" id="settings-notice" role="alert"></p>
+      <button type="button" id="settings-reset">Reset everything</button>
       <span class="spacer"></span>
       <button type="button" id="settings-cancel">Cancel</button>
       <button type="submit" class="primary">Save settings</button>

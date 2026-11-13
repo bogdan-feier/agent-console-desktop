@@ -99,12 +99,16 @@ across rounds; workers and the reviewer only within their round.
 
 ## Settings
 
-`settings.rs` holds the model and effort for each role, and the spending cap. The app loads
+`settings.rs` holds what the Settings window changes: model, effort and turn limit for each role,
+the spending cap, the allowed shell commands, web search, MCP servers, the number of workers and
+the notes for every agent. `config.rs` turns them into each agent's `AgentSpec` (for example, an
+allowed command `npm test` becomes the permission rule `Bash(npm test)`). The app loads
 them at start-up (`setup` in `src-tauri/src/lib.rs`) into a `SharedSettings`, an
 `Arc<RwLock<Settings>>` that every orchestrator holds. The orchestrator reads it each time it
 starts an agent, which is why a change applies to the next agent even mid-run. Saving
-validates first (model names become a command-line argument, so they are checked) and writes
-the file atomically.
+validates first (model names and allowed commands become command-line arguments, so they are
+checked: no leading dash, no commas or brackets in a command, no lone `*`) and writes the file
+atomically.
 
 ## Events
 

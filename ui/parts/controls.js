@@ -38,8 +38,8 @@ export function setRunState(state) {
   refreshControls();
 }
 
-/// A round takes minutes, so the user is probably in another window. Say
-/// something only when the run stops needing the machine and starts needing them.
+/// A round takes minutes, so the user is probably in another app. Say something
+/// only when the run stops needing the machine and starts needing them.
 const CALLS_FOR_YOU = {
   awaiting_approval: ["Plan ready", "The planner wrote a plan. Approve it to start the workers."],
   done: ["Review done", "The round's changes are waiting: apply them, discard them, or send work back."],
@@ -48,7 +48,9 @@ const CALLS_FOR_YOU = {
 
 function tellTheUser(state) {
   const message = CALLS_FOR_YOU[state];
-  if (message && document.hidden) notify(message[0], message[1]);
+  // hasFocus(), not hidden: a window can be in plain sight behind another app's,
+  // and someone looking at that other app still wants to be told.
+  if (message && !document.hasFocus()) notify(message[0], message[1]);
 }
 
 export function setRound(open) {

@@ -180,6 +180,16 @@
         <p class="hint">The app runs this itself, so it costs nothing, and gives the output to the reviewer. Leave it empty to skip it.</p>
       </section>
 
+      <section class="settings-section" aria-labelledby="notifications-title">
+        <h3 id="notifications-title">Notifications</h3>
+        <p class="hint">A round takes minutes. When one needs you (a plan to approve, a review to act on, an error) and Agent Console is not the app in front, it sends a desktop notification.</p>
+        <div class="field-row">
+          <label for="test-notification">macOS asks for permission the first time one is sent</label>
+          <button type="button" id="test-notification">Send a test one</button>
+        </div>
+        <p class="hint" id="notification-note"></p>
+      </section>
+
       <section class="settings-section" aria-labelledby="notes-title">
         <h3 id="notes-title">Notes for every agent</h3>
         <label for="notes">Added to every agent's instructions, for example "Use uv, never pip" or "Write comments in English"</label>

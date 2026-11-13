@@ -6,7 +6,7 @@
 import { $, button, el, problemText } from "./dom.js";
 import { refreshModelLabels, refreshTeam } from "./cards.js";
 import { app } from "./state.js";
-import { invoke } from "./tauri.js";
+import { canNotify, invoke, notify } from "./tauri.js";
 import { EFFORT_CHOICES, MODEL_CHOICES, PRESET_WORDS } from "./words.js";
 
 /// The roles that have a row of their own: key in the settings, label, lane colour.
@@ -163,6 +163,7 @@ function refreshScope() {
 }
 
 export function openSettings() {
+  $("notification-note").textContent = "";
   fillSettingsForm(app.settings);
   $("own-settings").checked = Boolean(app.settings.own);
   refreshScope();
@@ -195,8 +196,25 @@ export async function allowCommand(command) {
   });
 }
 
+/// Ask macOS, send one, and say plainly what happened. This is also how the
+/// permission box is brought up on purpose, rather than waiting for a round.
+async function testNotification() {
+  const note = $("notification-note");
+  note.textContent = "Asking macOS...";
+  const allowed = await canNotify();
+  if (!allowed) {
+    note.textContent = "macOS is not allowing notifications from Agent Console. Turn them on in "
+      + "System Settings, under Notifications, then try again.";
+    return;
+  }
+  await notify("Agent Console", "That is what a finished round will look like.");
+  note.textContent = "Sent one just now. If nothing appeared, check Agent Console under "
+    + "Notifications in System Settings, and that Do Not Disturb is off.";
+}
+
 export function wireSettings() {
   $("open-settings").addEventListener("click", openSettings);
+  $("test-notification").addEventListener("click", testNotification);
   $("settings-cancel").addEventListener("click", () => $("settings").close());
   $("settings-reset").addEventListener("click", () => fillSettingsForm(app.defaults));
   $("own-settings").addEventListener("change", refreshScope);

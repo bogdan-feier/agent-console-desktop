@@ -286,6 +286,7 @@ select { background: var(--sunken); border: 1px solid var(--line); border-radius
 .field-row { display: flex; align-items: center; gap: 12px; }
 .field-row label { margin: 0; flex: 1; font-size: 14px; color: var(--ink); }
 .field-row input, .field-row select { width: 120px; flex: none; }
+.field-row button { flex: none; }
 .switch { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); margin: 0; }
 .switch input { margin-top: 3px; }
 .switch .hint { display: block; }

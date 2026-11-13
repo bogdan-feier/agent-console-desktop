@@ -21,7 +21,7 @@ import { refreshPrompts, wirePrompts } from "./parts/prompts.js";
 import { chooseFolder, refreshWelcome, setFolder } from "./parts/project.js";
 import { allowCommand, buildSettingsForm, wireSettings } from "./parts/settings.js";
 import { agents, app, isAtRest, modelLabel } from "./parts/state.js";
-import { invoke, listen } from "./parts/tauri.js";
+import { canNotify, invoke, listen } from "./parts/tauri.js";
 import {
   addStep, addToThread, addToTurn, endTurn, place, showRunTotal, showUsage, startTurn, thread, youSaid,
 } from "./parts/turns.js";
@@ -44,6 +44,9 @@ async function sendMain() {
     } else {
       if (!message) return;
       const id = await invoke("start_run", { projectDir: app.folder, message, mode: chosen });
+      // A run is the moment to ask: from here on the user may walk away, and
+      // macOS only ever shows its permission box once.
+      canNotify();
       app.runFolder = app.folder;
       remember("agent-console-run-folder", app.folder);
       await show(id);

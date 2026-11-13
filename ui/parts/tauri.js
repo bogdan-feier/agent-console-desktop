@@ -14,7 +14,11 @@ export const { listen } = window.__TAURI__.event;
 // build, or a browser), these do nothing rather than throwing.
 const notification = window.__TAURI__.notification;
 
-/// Ask for permission once, the first time we want to notify.
+/// Whether we may notify, asking macOS the first time.
+///
+/// macOS shows its own "Allow notifications?" box the first time an app asks,
+/// and never again: after that the answer lives in System Settings. So the
+/// moment we ask matters, and we ask when a run starts rather than at launch.
 export async function canNotify() {
   if (!notification) return false;
   try {
@@ -25,6 +29,10 @@ export async function canNotify() {
   }
 }
 
+/// Send one if we are allowed. Returns whether it went out, which the Settings
+/// window uses to tell the user where they stand.
 export async function notify(title, body) {
-  if (await canNotify()) notification.sendNotification({ title, body });
+  if (!(await canNotify())) return false;
+  notification.sendNotification({ title, body });
+  return true;
 }

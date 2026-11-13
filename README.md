@@ -174,6 +174,14 @@ plans and less usage. Whether an agent should merge two workers' changes when th
 sees them, such as `cargo test`: its output goes to the reviewer, which costs nothing and
 saves it the turns.
 
+**Notifications.** When a round needs you (a plan to approve, a review to act on, an error)
+and Agent Console is not the app in front, it sends a desktop notification. macOS shows its
+permission box the first time one is sent, which is when your first run starts; **Send a test
+one** brings it up on purpose and proves the rest works. If you miss or decline that box,
+macOS never shows it again: turn notifications on under System Settings, Notifications,
+Agent Console. They are unreliable from `cargo tauri dev`, where the app is a bare binary
+rather than an installed one; test them with the app built by `cargo tauri build`.
+
 **Notes for every agent.** Text added to every agent's instructions, for rules about the
 project or how you like to work ("Use uv, never pip"). It is sent on every turn, mostly from
 the cache, so keep it short (at most 4000 characters).

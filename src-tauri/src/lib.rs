@@ -12,11 +12,9 @@ use std::env;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use agent_console_core::claude::{locate, ClaudeRunner};
 use agent_console_core::config::{self, AuthMode, Role, Task, PLANNER_ID};
-use agent_console_core::demo::DemoRunner;
 use agent_console_core::orchestrator::{
     can_approve, can_chat, can_finish_round, can_message, can_send_back, supervised, Isolation,
 };
@@ -29,14 +27,12 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{oneshot, OnceCell};
 
 const RUN_EVENT: &str = "run-event";
-const DEMO_VARIABLE: &str = "AGENT_CONSOLE_DEMO";
-const DEMO_STEP_DELAY: Duration = Duration::from_millis(700);
 const SETTINGS_FILE: &str = "settings.json";
 
 /// Commands return `Err(String)` for anything the user should read.
 type CommandResult<T> = Result<T, String>;
 
-/// One run plus the orchestrator (real or demo) that drives it.
+/// One run plus the orchestrator that drives it.
 struct ActiveRun {
     run: Arc<Run>,
     orchestrator: Orchestrator,
@@ -110,8 +106,6 @@ struct AppInfo {
     default_settings: Settings,
     /// The ready-made combinations offered in the Settings window.
     presets: Vec<PresetInfo>,
-    /// True when the app was started with AGENT_CONSOLE_DEMO=1.
-    demo_default: bool,
 }
 
 /// What the page receives for every event: which run it belongs to, and the event.
@@ -149,7 +143,6 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
             .into_iter()
             .map(|preset| PresetInfo { preset, settings: Settings::preset(preset) })
             .collect(),
-        demo_default: env::var(DEMO_VARIABLE).is_ok_and(|value| value == "1"),
     }
 }
 
@@ -181,10 +174,9 @@ async fn start_run(
     project_dir: String,
     message: String,
     mode: SendMode,
-    demo: bool,
 ) -> CommandResult<String> {
     let project_dir = expand_home(project_dir.trim());
-    if !demo && !project_dir.is_dir() {
+    if !project_dir.is_dir() {
         return Err(format!("Folder not found: {}", project_dir.display()));
     }
     // Never lose work silently: a round whose changes were not applied or discarded
@@ -193,13 +185,8 @@ async fn start_run(
         return Err("The current run has changes waiting. Apply or discard them first.".to_string());
     }
 
-    let (runner, isolation): (Arc<dyn AgentRunner>, Isolation) = if demo {
-        // Demo agents never touch files, so they need no worktrees.
-        (Arc::new(DemoRunner::new(DEMO_STEP_DELAY)), Isolation::SharedFolder)
-    } else {
-        (state.claude_runner().await?, Isolation::Worktrees)
-    };
-    let orchestrator = Orchestrator::new(runner, state.settings.clone(), isolation);
+    let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
+    let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);
 
     // Every event of this run is forwarded to the window.
     let sink: EventSink = Arc::new(move |run_id: &str, event: &Event| {

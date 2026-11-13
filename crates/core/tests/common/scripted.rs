@@ -1,7 +1,5 @@
-//! Demo mode: scripted agents that cost nothing and need no login.
-//!
-//! Used by the "Demo mode" switch in the app and by the tests. Demo agents only
-//! report what a real agent might do; they never touch any files.
+//! Scripted agents for the tests: they cost nothing, need no login, and never
+//! touch any files. They only report what a real agent might do.
 
 use std::path::Path;
 use std::time::Duration;
@@ -9,25 +7,24 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::config::{AgentSpec, Role};
-use crate::event::{EventKind, TokenUsage};
-use crate::orchestrator::FIX_PROMPT_MARKER;
-use crate::run::Run;
-use crate::runner::{AgentError, AgentOutput, AgentRunner};
+use agent_console_core::config::{AgentSpec, Role};
+use agent_console_core::event::{EventKind, TokenUsage};
+use agent_console_core::orchestrator::FIX_PROMPT_MARKER;
+use agent_console_core::{AgentError, AgentOutput, AgentRunner, Run};
 
-/// Words that make the demo dispatcher treat a message as a request to build something.
+/// Words that make the scripted dispatcher treat a message as a request to build something.
 const BUILD_WORDS: &[&str] = &["add", "build", "implement", "create", "make", "write", "fix", "plan"];
 /// Words that make it treat a message as a quick question it can answer itself.
 const QUESTION_WORDS: &[&str] = &["what", "where", "which", "how do", "how does", "how are", "who"];
 
-pub struct DemoRunner {
+pub struct ScriptedRunner {
     /// Pause before each scripted step, so the UI visibly fills in.
     pub step_delay: Duration,
 }
 
-impl DemoRunner {
+impl ScriptedRunner {
     pub fn new(step_delay: Duration) -> Self {
-        DemoRunner { step_delay }
+        ScriptedRunner { step_delay }
     }
 
     async fn text(&self, run: &Run, spec: &AgentSpec, text: &str) {
@@ -43,7 +40,7 @@ impl DemoRunner {
 }
 
 #[async_trait]
-impl AgentRunner for DemoRunner {
+impl AgentRunner for ScriptedRunner {
     async fn run_session(
         &self,
         run: &Run,
@@ -52,7 +49,7 @@ impl AgentRunner for DemoRunner {
         _resume: Option<&str>,
         _folder: &Path,
     ) -> Result<AgentOutput, AgentError> {
-        run.emit(Some(&spec.id), EventKind::AgentModel { model: format!("demo-{}", spec.model) });
+        run.emit(Some(&spec.id), EventKind::AgentModel { model: format!("scripted-{}", spec.model) });
         let (text, structured) = match (spec.role, spec.chat) {
             (Role::Dispatcher, _) => (String::new(), Some(self.dispatcher(run, spec, prompt).await)),
             (Role::Planner, false) => (String::new(), Some(self.plan(run, spec).await)),
@@ -60,8 +57,7 @@ impl AgentRunner for DemoRunner {
             (Role::Reviewer, false) => (String::new(), Some(self.review(run, spec).await)),
             (_, true) => (self.chat_reply(run, spec, prompt).await, None),
         };
-        // Made-up but realistic numbers, so the usage line can be seen in demo mode.
-        // No cost: demo mode spends nothing.
+        // Made-up but realistic numbers, so usage reporting is exercised too.
         let tokens = TokenUsage {
             input_tokens: 1_800,
             output_tokens: 900,
@@ -69,11 +65,11 @@ impl AgentRunner for DemoRunner {
             cache_creation_input_tokens: 6_500,
         };
         run.emit(Some(&spec.id), EventKind::Result { cost_usd: None, turns: Some(4), tokens });
-        Ok(AgentOutput { text, structured, session_id: Some(format!("demo-{}", spec.id)) })
+        Ok(AgentOutput { text, structured, session_id: Some(format!("scripted-{}", spec.id)) })
     }
 }
 
-impl DemoRunner {
+impl ScriptedRunner {
     async fn dispatcher(&self, run: &Run, spec: &AgentSpec, message: &str) -> Value {
         let lower = message.to_lowercase();
         let has_word = |words: &[&str]| words.iter().any(|word| lower.contains(word));

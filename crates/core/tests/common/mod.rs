@@ -1,6 +1,8 @@
 //! Helpers shared by the integration tests.
 #![allow(dead_code)] // each test file uses a different subset
 
+pub mod scripted;
+
 use std::sync::{Arc, Mutex};
 
 use agent_console_core::run::EventSink;

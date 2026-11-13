@@ -40,7 +40,7 @@
    line by line.
 5. Each line is parsed (`claude/protocol.rs`) and turned into an `Event` on the `Run`.
 6. The `Run` hands every event to its sink, which emits `run-event` to the window.
-7. `handle()` in `ui/app.js` updates the matching panel.
+7. `handle()` in `ui/app.js` updates the conversation or the matching team card.
 
 Every other button works the same way: a command that checks (`can_approve`,
 `can_send_back`, `can_finish_round`...) and then starts one orchestrator method.
@@ -60,8 +60,8 @@ apply:   Workspace::apply  -> git merge --squash into your project (staged, not 
          Workspace::remove -> worktrees and branches deleted
 ```
 
-All git work is in `worktrees.rs`; nothing else runs git. Demo mode and most tests use
-`Isolation::SharedFolder` instead, where everyone works in the project folder and there is
+All git work is in `worktrees.rs`; nothing else runs git. Most tests and the planner-only
+example use `Isolation::SharedFolder` instead, where everyone works in the project folder and there is
 nothing to merge. `tests/worktree_round.rs` runs a whole round in real worktrees.
 
 Claude Code finds a session to resume by folder. Worktree paths stay the same for the
@@ -76,7 +76,7 @@ again with `--resume=<that session>`, so the agent continues where it left off. 
 chatting, agents use the "chat" version of their spec (`config::chat_spec`): same model and
 tools, different instructions, and no JSON schema, so they answer in plain text.
 
-"Make plan" after a brainstorm resumes the planner's session too, this time with the plan
+Plan after a brainstorm resumes the planner's session too, this time with the plan
 schema, so the plan reflects the conversation. The dispatcher and the planner keep their sessions
 across rounds; workers and the reviewer only within their round.
 
@@ -88,7 +88,7 @@ across rounds; workers and the reviewer only within their round.
   options exist.
 - `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds
   apart (`PARALLEL_START_GAP` in `config.rs`), so the later ones can reuse the prompt cache.
-  The demo runner leaves it at zero.
+  The scripted test runner leaves it at zero.
 - One reviewer checks every task at once, and its prompt includes the merged diff
   (`Workspace::review_changes`). A second review resumes its session and only gets the diff
   since the commit it last reviewed.
@@ -139,7 +139,7 @@ passes that PATH on to `claude` so the tools it runs (`git`, `uv`, `cargo`) are 
 | Where | What it covers |
 |---|---|
 | `#[cfg(test)]` blocks inside `crates/core/src/*.rs` | Small pieces: config, settings, command line, JSON parsing, PATH handling |
-| `crates/core/tests/flow.rs` | The whole flow with the scripted demo agents: dispatcher routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
+| `crates/core/tests/flow.rs` | The whole flow with scripted agents (`tests/common/scripted.rs`): dispatcher routing, plan, three workers, review, send back, apply, discard, stop, live settings changes |
 | `crates/core/tests/worktree_round.rs` | A whole round in real git worktrees, with stand-in agents that write files |
 | `#[cfg(test)]` in `crates/core/src/worktrees.rs` | Every git step on real temporary repositories: commits, clashes, apply refusing, cleanup |
 | `crates/core/tests/fake_claude.rs` | `ClaudeRunner` against `tests/fixtures/fake-claude.sh`: real processes, stdin, environment, killing, usage flags, limits |

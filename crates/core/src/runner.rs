@@ -2,7 +2,7 @@
 //!
 //! [`AgentRunner`] is a trait: a promise that a type can run an agent session.
 //! Two types keep that promise. `claude::ClaudeRunner` starts the real `claude`
-//! program; `demo::DemoRunner` plays a script. The orchestrator only knows the
+//! program; the tests use runners that play a script. The orchestrator only knows the
 //! trait, so it works with either.
 
 use std::path::Path;

@@ -7,45 +7,70 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="page">
-  <div class="top">
-    <span class="chip" id="auth-chip"></span>
-    <label class="demo-switch" title="Scripted agents: nothing is edited and nothing is spent">
-      <input type="checkbox" id="demo"> Demo mode
-    </label>
-    <span class="powered">Powered by Claude</span>
-    <span class="state" id="run-state">Nothing running</span>
-    <span class="run-usage" id="run-usage" hidden></span>
+<div class="app">
+
+  <header class="bar">
+    <button type="button" class="project" id="project" title="Choose the project the team works on">
+      <span class="project-name" id="project-name">Choose a project</span>
+      <span class="project-path" id="project-path"></span>
+    </button>
+
+    <!-- Where the current round is. Each step is lit in the colour of its lane. -->
+    <ol class="stages" id="stages" aria-label="Round progress">
+      <li data-stage="ask" class="plan-hue"><span>1</span>Ask</li>
+      <li data-stage="plan" class="plan-hue"><span>2</span>Plan</li>
+      <li data-stage="approve" class="plan-hue"><span>3</span>Approve</li>
+      <li data-stage="build" class="build-hue"><span>4</span>Build</li>
+      <li data-stage="review" class="review-hue"><span>5</span>Review</li>
+      <li data-stage="apply" class="review-hue"><span>6</span>Apply</li>
+    </ol>
+
+    <span class="usage" id="run-usage" hidden></span>
+    <span class="auth" id="auth-chip"></span>
     <button type="button" id="open-settings">Settings</button>
-  </div>
+  </header>
 
-  <form class="brief" id="brief">
-    <div>
-      <label for="project-dir">Project folder</label>
-      <div class="folder">
-        <input type="text" id="project-dir" placeholder="~/projects/agentic-workflow-starter" autocomplete="off" spellcheck="false">
-        <button type="button" id="choose-folder">Choose</button>
+  <main class="workspace">
+
+    <section class="conversation" aria-label="Conversation">
+      <div class="conversation-head">
+        <h1>Conversation</h1>
+        <span class="run-state" id="run-state">No run yet</span>
+        <button type="button" class="quiet" id="new-run" title="Start over with fresh agents. Changes from an open round must be applied or discarded first.">New run</button>
       </div>
-    </div>
-    <div>
-      <label for="request">Message the team (the dispatcher answers or passes it on)</label>
-      <textarea id="request" rows="1" placeholder="Ask a question, share an idea, or ask for a change"></textarea>
-    </div>
-    <div class="actions">
-      <button class="primary" type="submit" id="send" title="The dispatcher answers quick questions itself and passes the rest to the planner (Cmd+Enter)">Send</button>
-      <button type="button" id="send-brainstorm" title="Skip the dispatcher: talk it through with the planner">Brainstorm</button>
-      <button type="button" id="send-plan" title="Skip the dispatcher and the discussion: ask the planner for a plan">Plan right away</button>
-      <button type="button" id="stop" disabled>Stop</button>
-      <button type="button" id="new-run" title="Start over with fresh agents (the current changes must be applied or discarded first)">New run</button>
-    </div>
-    <p class="notice" id="notice" role="alert"></p>
-  </form>
 
-  <div class="lanes" id="lanes">
-    <div class="lane-title plan-hue">Plan <span>the dispatcher answers or passes on; the planner plans</span></div>
-    <div class="lane-title build-hue">Build <span>each worker in its own copy of the project</span></div>
-    <div class="lane-title review-hue">Review <span>one reviewer checks everything together</span></div>
-  </div>
+      <div class="thread" id="thread"></div>
+
+      <!-- Shown while a round's changes wait for your decision. -->
+      <div class="round-bar" id="round-bar" hidden>
+        <p id="round-text">The workers' changes are ready.</p>
+        <button type="button" class="apply" id="apply" title="Put the changes into your project as staged changes, for you to commit">Apply to project</button>
+        <button type="button" id="review-again" title="After talking to a worker: check everything again">Review again</button>
+        <button type="button" class="quiet" id="discard" title="Delete the workers' copies. Your project is not touched.">Discard</button>
+      </div>
+
+      <form class="composer" id="composer">
+        <p class="problem-line" id="notice" role="alert"></p>
+        <textarea id="message" rows="2" aria-label="Message"></textarea>
+        <div class="composer-row">
+          <div class="modes" role="radiogroup" aria-label="Who gets the message">
+            <label title="The dispatcher answers quick questions itself and passes the rest to the planner"><input type="radio" name="mode" value="dispatcher" checked> Ask</label>
+            <label title="Talk an idea through with the planner"><input type="radio" name="mode" value="brainstorm"> Brainstorm</label>
+            <label title="The planner turns the conversation into tasks; anything you type is passed along"><input type="radio" name="mode" value="plan"> Plan</label>
+          </div>
+          <span class="hint">Cmd+Enter sends</span>
+          <button type="button" class="stop" id="stop" hidden>Stop</button>
+          <button type="submit" class="primary" id="send">Send</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="team" aria-label="Team">
+      <div class="workers" id="workers"></div>
+      <div class="reviewer-slot" id="reviewer-slot"></div>
+    </section>
+
+  </main>
 </div>
 
 <dialog id="settings">
@@ -67,7 +92,7 @@
       <input type="checkbox" id="use-mcp">
       <span>Give agents my MCP servers <span class="hint">(off saves tokens: every server's tool list is sent on every turn of every agent)</span></span>
     </label>
-    <p class="notice" id="settings-notice" role="alert"></p>
+    <p class="problem-line" id="settings-notice" role="alert"></p>
     <div class="dialog-actions">
       <button type="button" id="settings-reset">Reset to defaults</button>
       <span class="spacer"></span>

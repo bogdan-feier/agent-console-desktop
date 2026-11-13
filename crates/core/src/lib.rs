@@ -17,7 +17,6 @@
 pub mod changes;
 pub mod claude;
 pub mod config;
-pub mod demo;
 pub mod event;
 pub mod orchestrator;
 pub mod run;

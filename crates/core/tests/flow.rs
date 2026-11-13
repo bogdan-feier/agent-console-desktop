@@ -1,7 +1,7 @@
-//! The whole flow with the scripted demo agents: the dispatcher, planning, a round with
-//! three workers and one review, sending work back, applying and discarding.
-//! (Demo agents touch no files, so these use the shared-folder mode; the real
-//! worktrees are tested in `worktree_round.rs`.)
+//! The whole flow with scripted agents: the dispatcher, planning, a round with three
+//! workers and one review, sending work back, applying and discarding. (Scripted
+//! agents touch no files, so these use the shared-folder mode; the real worktrees
+//! are tested in `worktree_round.rs`.)
 
 mod common;
 
@@ -9,17 +9,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_console_core::config::{Task, Verdict};
-use agent_console_core::demo::DemoRunner;
 use agent_console_core::orchestrator::{
     can_approve, can_chat, can_finish_round, can_send_back, supervised, Isolation,
 };
 use agent_console_core::settings::{self, Settings};
 use agent_console_core::{Orchestrator, RunState};
+use common::scripted::ScriptedRunner;
 use common::{new_run, Collected};
 
-fn instant_demo() -> Orchestrator {
+fn instant_script() -> Orchestrator {
     Orchestrator::new(
-        Arc::new(DemoRunner::new(Duration::ZERO)),
+        Arc::new(ScriptedRunner::new(Duration::ZERO)),
         settings::shared(Settings::default()),
         Isolation::SharedFolder,
     )
@@ -28,7 +28,7 @@ fn instant_demo() -> Orchestrator {
 /// A run that has been planned, built and reviewed once.
 async fn reviewed_run(collected: &Collected) -> (Arc<agent_console_core::Run>, Orchestrator) {
     let run = new_run(".", collected);
-    let orchestrator = instant_demo();
+    let orchestrator = instant_script();
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
     supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
     (run, orchestrator)
@@ -39,7 +39,7 @@ async fn dispatcher_answers_quick_questions_itself() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
-    supervised(run.clone(), instant_demo().ask(&run, "What does stats.py do?")).await;
+    supervised(run.clone(), instant_script().ask(&run, "What does stats.py do?")).await;
 
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(collected.statuses("dispatcher"), ["running", "done"]);
@@ -53,11 +53,11 @@ async fn dispatcher_passes_ideas_to_the_planner_to_talk_through() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
-    supervised(run.clone(), instant_demo().ask(&run, "Thoughts on better text statistics")).await;
+    supervised(run.clone(), instant_script().ask(&run, "Thoughts on better text statistics")).await;
 
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(collected.statuses("planner"), ["running", "done"]);
-    assert_eq!(run.session("planner").as_deref(), Some("demo-planner"));
+    assert_eq!(run.session("planner").as_deref(), Some("scripted-planner"));
     // The user's message appears in both panels: the dispatcher's, and the planner's.
     let to: Vec<_> = collected.of_type("user_message").iter().map(|e| e["agent"].clone()).collect();
     assert_eq!(to, ["dispatcher", "planner"]);
@@ -68,7 +68,7 @@ async fn dispatcher_passes_clear_requests_on_to_be_planned() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
 
-    supervised(run.clone(), instant_demo().ask(&run, "Add three text helpers")).await;
+    supervised(run.clone(), instant_script().ask(&run, "Add three text helpers")).await;
 
     assert_eq!(run.state(), RunState::AwaitingApproval);
     assert_eq!(run.tasks().len(), 3);
@@ -106,6 +106,13 @@ async fn sending_work_back_resumes_that_worker_and_reviews_again() {
     assert_eq!(collected.statuses("worker-2"), ["running", "done", "running", "done"]);
     assert_eq!(collected.statuses("worker-1"), ["running", "done"], "worker 1 was not touched");
     assert_eq!(collected.statuses("reviewer"), ["running", "done", "running", "done"]);
+    let notices = collected.of_type("notice");
+    assert!(
+        notices
+            .iter()
+            .any(|n| n["agent"] == "worker-2" && n["text"].as_str().unwrap().starts_with("Sent back")),
+        "the worker's card says why it started again"
+    );
 }
 
 #[tokio::test]
@@ -142,7 +149,7 @@ async fn discarding_closes_the_round() {
 async fn who_can_be_talked_to_and_when() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
+    let orchestrator = instant_script();
 
     assert!(can_chat(&run, "planner", "hello").is_ok());
     assert!(can_chat(&run, "planner", "   ").is_err());
@@ -175,7 +182,7 @@ async fn talking_to_a_worker_updates_its_report_for_the_next_review() {
 async fn chatting_while_a_plan_waits_keeps_it_waiting() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
-    let orchestrator = instant_demo();
+    let orchestrator = instant_script();
 
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
     supervised(run.clone(), orchestrator.chat(&run, "planner", "Why three tasks?")).await;
@@ -195,7 +202,7 @@ async fn a_single_task_uses_one_worker() {
         files: vec!["a.py".to_string()],
     };
 
-    supervised(run.clone(), instant_demo().build(&run, vec![task])).await;
+    supervised(run.clone(), instant_script().build(&run, vec![task])).await;
 
     assert_eq!(run.state(), RunState::Done);
     assert_eq!(collected.statuses("worker-1"), ["running", "done"]);
@@ -219,8 +226,11 @@ async fn changed_settings_apply_to_the_next_agent() {
     let collected = Collected::default();
     let run = new_run(".", &collected);
     let shared = settings::shared(Settings::default());
-    let orchestrator =
-        Orchestrator::new(Arc::new(DemoRunner::new(Duration::ZERO)), shared.clone(), Isolation::SharedFolder);
+    let orchestrator = Orchestrator::new(
+        Arc::new(ScriptedRunner::new(Duration::ZERO)),
+        shared.clone(),
+        Isolation::SharedFolder,
+    );
 
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
     shared.write().unwrap().worker.model = "haiku".to_string();
@@ -229,9 +239,9 @@ async fn changed_settings_apply_to_the_next_agent() {
     let model_of = |agent: &str| {
         collected.of_type("agent_model").into_iter().find(|e| e["agent"] == agent).unwrap()["model"].clone()
     };
-    assert_eq!(model_of("planner"), "demo-opus");
-    assert_eq!(model_of("worker-1"), "demo-haiku");
-    assert_eq!(model_of("reviewer"), "demo-sonnet");
+    assert_eq!(model_of("planner"), "scripted-opus");
+    assert_eq!(model_of("worker-1"), "scripted-haiku");
+    assert_eq!(model_of("reviewer"), "scripted-sonnet");
 }
 
 #[tokio::test]
@@ -240,7 +250,7 @@ async fn stopping_marks_running_agents_as_stopped() {
     let run = new_run(".", &collected);
     // Slow steps, so the planner is still working when we stop it.
     let orchestrator = Orchestrator::new(
-        Arc::new(DemoRunner::new(Duration::from_secs(30))),
+        Arc::new(ScriptedRunner::new(Duration::from_secs(30))),
         settings::shared(Settings::default()),
         Isolation::SharedFolder,
     );
@@ -260,9 +270,9 @@ async fn stopping_marks_running_agents_as_stopped() {
     assert!(!run.stop(), "nothing left to stop");
 }
 
-/// Wraps the demo runner to record when each agent starts, with a start gap.
+/// Wraps the scripted runner to record when each agent starts, with a start gap.
 struct GappedRunner {
-    inner: DemoRunner,
+    inner: ScriptedRunner,
     gap: Duration,
     starts: std::sync::Mutex<Vec<(String, std::time::Instant)>>,
 }
@@ -289,8 +299,11 @@ impl agent_console_core::AgentRunner for GappedRunner {
 #[tokio::test]
 async fn parallel_workers_start_one_gap_apart() {
     let gap = Duration::from_millis(200);
-    let runner =
-        Arc::new(GappedRunner { inner: DemoRunner::new(Duration::ZERO), gap, starts: Default::default() });
+    let runner = Arc::new(GappedRunner {
+        inner: ScriptedRunner::new(Duration::ZERO),
+        gap,
+        starts: Default::default(),
+    });
     let orchestrator =
         Orchestrator::new(runner.clone(), settings::shared(Settings::default()), Isolation::SharedFolder);
     let run = new_run(".", &Collected::default());

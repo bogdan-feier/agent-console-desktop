@@ -53,7 +53,7 @@ pub struct Run {
 #[derive(Default)]
 pub(crate) struct Round {
     /// The git worktrees, or `None` when the agents work directly in the project
-    /// folder (demo mode and tests).
+    /// folder (tests, and the planner-only example).
     pub(crate) workspace: Option<Arc<Workspace>>,
     pub(crate) worker_reports: HashMap<usize, String>,
     pub(crate) review: Option<Review>,

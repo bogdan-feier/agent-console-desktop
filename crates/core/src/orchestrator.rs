@@ -41,8 +41,8 @@ pub enum Isolation {
     /// Each worker gets its own git worktree; Apply brings the result into the
     /// project. Used for real runs.
     Worktrees,
-    /// Everyone works directly in the project folder. Used by demo mode (whose
-    /// agents never touch files) and by tests.
+    /// Everyone works directly in the project folder. Used by tests whose scripted
+    /// agents never touch files, and by the planner-only example (planning reads only).
     SharedFolder,
 }
 
@@ -239,6 +239,8 @@ impl Orchestrator {
     /// Check [`can_send_back`] first.
     pub async fn send_back(&self, run: &Run, number: usize) -> Result<(), AgentError> {
         run.set_state(RunState::Building);
+        let text = "Sent back to fix what the reviewer found in this task.".to_string();
+        run.emit(Some(&format!("worker-{number}")), EventKind::Notice { text });
         if self.build_one(run, number, true).await {
             return self.review(run).await;
         }
@@ -252,8 +254,8 @@ impl Orchestrator {
     /// round. If that is not possible, the round stays open and the reason is shown.
     pub async fn apply(&self, run: &Run) -> Result<(), AgentError> {
         let Some(workspace) = run.workspace() else {
-            let text = "Round closed. Without worktrees (as in demo mode) the agents work in the project \
-                        folder itself, so there was nothing to bring over."
+            let text = "Round closed. Without worktrees the agents work in the project folder \
+                        itself, so there was nothing to bring over."
                 .to_string();
             run.emit(Some(REVIEWER_ID), EventKind::Notice { text });
             run.close_round();

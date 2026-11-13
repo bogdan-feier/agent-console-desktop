@@ -44,7 +44,6 @@ open "target/release/bundle/macos/Agent Console.app"
 | Command | What it does |
 |---|---|
 | `cargo tauri dev` | Run the app from source. Changes to Rust or to `ui/` reload it. |
-| `AGENT_CONSOLE_DEMO=1 cargo tauri dev` | The same, with demo mode on: scripted agents, nothing edited, nothing spent. |
 | `cargo test --workspace` | Run all tests. They use a fake `claude`, so they never call the real one. |
 | `cargo fmt --all` | Format the Rust code. |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Run the linter; warnings count as errors. |
@@ -61,14 +60,21 @@ mkdir -p .claude && cp docs/claude-settings.example.json .claude/settings.json
 The project must be a git repository. When you approve a plan, it must have no uncommitted
 changes (see "Why worktrees" below).
 
-1. **Message the team.** Type in the box at the top and press **Send** (or Cmd+Enter).
-   The dispatcher answers quick questions itself ("what does this function do?"). Ideas go to the
-   planner to talk through; clear requests go to the planner to plan. To skip the dispatcher, press
-   **Brainstorm** or **Plan right away** instead.
-2. **Brainstorm (optional).** Keep talking to the planner in the box at the bottom of its
-   panel. Nothing is edited.
-3. **Make plan.** The planner turns the conversation into one to three tasks. Edit the tasks
-   directly, or tell the planner what to change and press Make plan again.
+The window has two halves. On the left is the conversation: you, the dispatcher and the
+planner, plus the cards where you approve a plan or act on a review. On the right is the
+team: a card for each worker and one for the reviewer. The strip at the top shows which
+step of the round you are at.
+
+1. **Message the team.** Choose the project in the top left, type in the box at the bottom of
+   the conversation and press **Send** (or Cmd+Enter). With **Ask** selected, the dispatcher
+   answers quick questions itself ("what does this function do?"). Ideas go to the planner to
+   talk through; clear requests go to the planner to plan. Select **Brainstorm** or **Plan** to
+   skip the dispatcher.
+2. **Brainstorm (optional).** Keep talking to the planner with **Brainstorm** selected.
+   Nothing is edited.
+3. **Plan.** Select **Plan** and send (typing something is optional). The planner turns the
+   conversation into one to three tasks. Edit the tasks in the plan card directly, or send
+   **Plan** again with what to change.
 4. **Approve.** This is where work starts. Each worker gets its own copy of the project (a
    git worktree) and builds its task there. Your project folder is not touched.
 5. **Review.** When the workers finish, their work is merged together and the reviewer
@@ -95,7 +101,7 @@ temporary folder, not in your project.
 - **Clean start.** Workers start from your last commit, which is why uncommitted changes
   must be committed or stashed before you approve a plan.
 - **Clashes.** The planner gives each task different files. If two workers still change
-  the same file, the merge before the review fails, and the reviewer's panel says which
+  the same file, the merge before the review fails, and the reviewer's card says which
   file. The app also warns when a worker changes a file outside its task.
 - **Apply needs a clean, unchanged project.** If you committed something in the meantime,
   Apply tells you the branch to merge yourself (`git merge --squash <branch>`).
@@ -173,12 +179,12 @@ that.
 
 **What you can do**
 
-- **Watch the numbers.** Each agent's panel shows the tokens its session used, and the top
-  bar shows the run total. "Read from cache" is the cheap kind.
+- **Watch the numbers.** Each agent's reply ends with the tokens its session used, and the top
+  bar shows the run total. "From cache" is the cheap kind.
 - **Try the Lean preset** for routine work, and Thorough only when quality matters most.
 - **Keep brainstorms short.** Each message resends the conversation so far (mostly from
-  cache, but it grows). When you know what you want, press Make plan.
-- **Plan right away** for small, clear changes: it skips the dispatcher and the brainstorm.
+  cache, but it grows). When you know what you want, send Plan.
+- **Plan straight away** for small, clear changes: it skips the dispatcher and the brainstorm.
 - **Keep the target project's `CLAUDE.md` short.** Every agent reads it at the start.
 - **Ask for one thing per round.** Two unrelated requests in one round cost more than two
   small rounds, because every agent carries both in its context.
@@ -214,7 +220,7 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
   their work is merged.
 - **Shell commands are limited.** Agents may run the commands in `CHECK_COMMANDS`
   (`config.rs`) plus whatever the project's `.claude/settings.json` allows. Everything
-  else is refused and shows up in the panel as "Refused or failed".
+  else is refused and shows up in that agent's steps as "Refused or failed".
 - **Each session has a cap.** A session stops at the spending cap in Settings (5 dollars of
   API-equivalent usage by default). Long conversations with one agent count toward the same
   session, so a long brainstorm can reach it.
@@ -234,6 +240,6 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 | An agent fails right after you change its effort | Some models do not support every effort level. Set it back to Default. |
 | "Stopped at this agent's turn limit" | Send the agent a message such as "continue" to let it finish, or raise its limit in `config.rs`. |
 | "Could not find the `claude` program" | Install Claude Code, or start the app with `AGENT_CONSOLE_CLAUDE=/full/path/to/claude`. |
-| "Claude could not sign in" in the planner panel | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
+| "Claude could not sign in" in the conversation | Run `claude` in a terminal, type `/login`, finish in the browser, try again. |
 | A tool line says "Refused or failed" | The command is not on the allow list. Add it to `CHECK_COMMANDS` or to the project's `.claude/settings.json`. |
 | Want to see the raw events without the app | `cargo run -p agent-console-core --example plan -- <folder> "<request>"` |

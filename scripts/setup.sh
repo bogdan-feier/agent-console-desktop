@@ -42,7 +42,7 @@ if command -v claude >/dev/null 2>&1; then
     echo "found: $(command -v claude)"
 else
     echo "WARNING: 'claude' is not on your PATH. The app needs Claude Code installed and"
-    echo "logged in (run 'claude', then /login). Demo mode works without it."
+    echo "logged in (run 'claude', then /login)."
 fi
 
 step "Tests"

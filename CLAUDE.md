@@ -6,7 +6,7 @@ brainstorms and plans, up to 3 workers (Sonnet) build in their own git worktrees
 reviewer checks all their work merged together. The user applies or discards each round.
 
 ## Commands
-- Run from source: `cargo tauri dev` (demo mode: `AGENT_CONSOLE_DEMO=1 cargo tauri dev`)
+- Run from source: `cargo tauri dev`
 - Tests: `cargo test --workspace`
 - Format: `cargo fmt --all`
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (warnings are errors)

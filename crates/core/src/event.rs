@@ -46,6 +46,11 @@ pub enum EventKind {
         /// `#[serde(default)]` so rounds saved before this field existed still load.
         #[serde(default)]
         quick: bool,
+        /// The title of each task, in worker order, so the window can label the
+        /// panels without reading them back out of the plan card. A quick change
+        /// has no plan card at all, and this is the only place its title comes from.
+        #[serde(default)]
+        tasks: Vec<String>,
     },
     /// A message the user sent to this agent.
     UserMessage {

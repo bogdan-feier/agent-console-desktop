@@ -21,7 +21,9 @@ export const app = {
   nextSeq: 0,       // sequence number of the next event we expect for this run
   replaying: false,
   /// The open round came from Quick: one worker, and nobody reviewed it.
-  quickRound: false, // true while an older run's events are being shown again
+  quickRound: false,
+  /// Each worker's task title for the open round, as the round event gave them.
+  taskTitles: [], // true while an older run's events are being shown again
   cost: 0,          // API-equivalent dollars the agents of this run have used
   tokens: 0,        // tokens the agents of this run have used, all kinds together
 };

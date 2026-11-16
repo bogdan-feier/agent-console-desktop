@@ -74,6 +74,9 @@ pub(crate) struct Round {
     /// The commit of the review worktree at the last review, so a second review
     /// only needs the changes made since.
     pub(crate) last_reviewed: Option<String>,
+    /// Opened by a quick change: there is no plan, so the one worker was never told
+    /// which files it may touch and has to decide for itself.
+    pub(crate) quick: bool,
 }
 
 /// What has to be kept to pick a run up again after the app has been closed.
@@ -98,6 +101,9 @@ pub struct RoundSnapshot {
     pub worker_reports: HashMap<usize, String>,
     pub review: Option<Review>,
     pub last_reviewed: Option<String>,
+    /// `#[serde(default)]` so rounds saved before quick changes existed still load.
+    #[serde(default)]
+    pub quick: bool,
     /// Enough to find the round's worktrees again: the rest comes from the run
     /// itself (the project folder, the run's ID, the round number).
     pub workspace: Option<WorkspaceSnapshot>,
@@ -159,6 +165,7 @@ impl Run {
             sessions: inner.sessions.clone(),
             rounds_started: inner.rounds_started,
             round: inner.round.as_ref().map(|round| RoundSnapshot {
+                quick: round.quick,
                 worker_reports: round.worker_reports.clone(),
                 review: round.review.clone(),
                 last_reviewed: round.last_reviewed.clone(),
@@ -211,6 +218,7 @@ impl Run {
             worker_reports: round.worker_reports,
             review: round.review,
             last_reviewed: round.last_reviewed,
+            quick: round.quick,
         });
         Arc::new(Run {
             id,
@@ -331,15 +339,21 @@ impl Run {
         let number = {
             let mut inner = self.lock();
             inner.rounds_started += 1;
-            inner.round = Some(Round { workspace, ..Round::default() });
+            inner.round = Some(Round { workspace, quick, ..Round::default() });
             inner.rounds_started
         };
-        self.emit(None, EventKind::Round { open: true, quick });
+        let tasks = self.tasks().into_iter().map(|task| task.title).collect();
+        self.emit(None, EventKind::Round { open: true, quick, tasks });
         number
     }
 
     /// The number the next round will get.
     /// How many rounds this run has opened so far.
+    /// True while a quick change's round is open: no plan, so no file list.
+    pub(crate) fn round_is_quick(&self) -> bool {
+        self.lock().round.as_ref().is_some_and(|round| round.quick)
+    }
+
     pub(crate) fn rounds_started(&self) -> usize {
         self.lock().rounds_started
     }
@@ -358,7 +372,7 @@ impl Run {
             });
             inner.round.take().and_then(|round| round.workspace)
         };
-        self.emit(None, EventKind::Round { open: false, quick: false });
+        self.emit(None, EventKind::Round { open: false, quick: false, tasks: Vec::new() });
         workspace
     }
 

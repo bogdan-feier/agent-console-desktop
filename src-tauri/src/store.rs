@@ -256,7 +256,11 @@ mod tests {
 
         let events = [
             Event { seq: 0, agent: None, kind: EventKind::RunState { state: RunState::Planning } },
-            Event { seq: 1, agent: None, kind: EventKind::Round { open: true, quick: false } },
+            Event {
+                seq: 1,
+                agent: None,
+                kind: EventKind::Round { open: true, quick: false, tasks: Vec::new() },
+            },
             Event {
                 seq: 2,
                 agent: Some("worker-1".to_string()),
@@ -302,7 +306,11 @@ mod tests {
         store.start(&run, models());
         store.append(
             &run.id,
-            &Event { seq: 0, agent: None, kind: EventKind::Round { open: true, quick: false } },
+            &Event {
+                seq: 0,
+                agent: None,
+                kind: EventKind::Round { open: true, quick: false, tasks: Vec::new() },
+            },
         );
         // As if the app were killed in the middle of writing a line.
         let mut file = OpenOptions::new().append(true).open(store.path(&run.id)).unwrap();

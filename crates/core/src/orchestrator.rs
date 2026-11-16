@@ -517,7 +517,7 @@ impl Orchestrator {
         let Some(task) = run.task(number) else { return false };
         let (prompt, session) = match run.review() {
             Some(review) if is_fix => (fix_prompt(&review, number), run.session(&spec.id)),
-            _ => (worker_prompt(&task), None),
+            _ => (worker_prompt(&task, run.round_is_quick()), None),
         };
         match run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await {
             Ok(output) => {
@@ -535,7 +535,9 @@ impl Orchestrator {
         let Some(workspace) = run.workspace() else { return };
         let agent = format!("worker-{number}");
         match workspace.commit_worker(number, &task.title, &task.files).await {
-            Ok(commit) if !commit.outside_task.is_empty() => {
+            // In a quick change there is no file list and no other worker, so there is
+            // no "outside its task" to be outside of.
+            Ok(commit) if !commit.outside_task.is_empty() && !run.round_is_quick() => {
                 let text = format!(
                     "Also changed files outside its task: {}. If another worker changed them too, \
                      merging their work will fail.",
@@ -691,12 +693,30 @@ fn file_list(task: &Task) -> String {
     }
 }
 
-fn worker_prompt(task: &Task) -> String {
+/// What a worker is allowed to touch.
+///
+/// In a planned round it is the planner's list, and a worker that needs a file not
+/// on it is meant to stop: the list is how two workers are kept out of each other's
+/// way. A quick change has no plan and so no list, and the same rule there would
+/// stop every worker before it started. It is the only task in the round, so there
+/// is nobody to collide with and it can decide for itself.
+fn files_allowed(task: &Task, free_rein: bool) -> String {
+    if free_rein {
+        "Files you may create or edit: whichever ones the task needs. Nobody else is \
+         working on this project right now, so there is no list. Change as little as \
+         the task allows, and say in your report what you touched."
+            .to_string()
+    } else {
+        format!("Files you may create or edit:\n{}", file_list(task))
+    }
+}
+
+fn worker_prompt(task: &Task, free_rein: bool) -> String {
     format!(
-        "Your task: {}\n\n{}\n\nFiles you may create or edit:\n{}{}",
+        "Your task: {}\n\n{}\n\n{}{}",
         task.title,
         task.instructions,
-        file_list(task),
+        files_allowed(task, free_rein),
         planner_context(task)
     )
 }
@@ -857,10 +877,31 @@ mod tests {
                 .to_string(),
         };
 
-        let prompt = worker_prompt(&task);
+        let prompt = worker_prompt(&task, false);
 
         assert!(prompt.contains("greet(name) is at app.py:12"), "{prompt}");
         assert!(prompt.contains("read the file yourself if something does not match"), "{prompt}");
+    }
+
+    #[test]
+    fn a_quick_change_lets_its_worker_choose_the_files() {
+        // No plan means no file list, and a worker told to stop at an empty list
+        // would never start.
+        let task = Task {
+            title: "Make the warning distance configurable".to_string(),
+            instructions: "Read it from the environment.".to_string(),
+            files: Vec::new(),
+            context: String::new(),
+        };
+
+        let quick = worker_prompt(&task, true);
+        assert!(quick.contains("whichever ones the task needs"), "{quick}");
+        assert!(!quick.contains("(none listed)"), "{quick}");
+
+        // A planned task with no files is a different thing: the planner should have
+        // listed them, and stopping is the right answer.
+        let planned = worker_prompt(&task, false);
+        assert!(planned.contains("(none listed)"), "{planned}");
     }
 
     #[test]
@@ -872,7 +913,7 @@ mod tests {
             context: "   ".to_string(),
         };
 
-        let prompt = worker_prompt(&task);
+        let prompt = worker_prompt(&task, false);
 
         assert!(!prompt.contains("the planner found"), "no empty heading: {prompt}");
         assert!(prompt.trim_end().ends_with("app.py"), "{prompt}");

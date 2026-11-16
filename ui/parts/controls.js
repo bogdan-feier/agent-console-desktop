@@ -20,18 +20,15 @@ export function lockPlans() {
 }
 
 /// The titles of the newest plan's tasks, in order.
-function planTitles() {
-  const plan = [...thread().querySelectorAll(".decision.plan:not(.superseded)")].pop();
-  return plan ? [...plan.querySelectorAll("[data-field=title]")].map((field) => field.value) : [];
-}
-
 export function setRunState(state) {
   const previous = app.runState;
   app.runState = state;
   $("run-state").textContent = state ? STATE_WORDS[state] : "No run yet";
   if (state === "building") {
     lockPlans();
-    showTaskTitles(planTitles());
+    // The titles come from the round itself, which carries them whether they were
+    // planned, edited before approving, or typed as a quick change.
+    showTaskTitles(app.taskTitles);
   }
   if (state !== previous) tellTheUser(state);
   refreshStages();
@@ -54,8 +51,12 @@ function tellTheUser(state) {
   if (!document.hasFocus()) notify(message[0], message[1]);
 }
 
-export function setRound(open, quick = false) {
+export function setRound(open, quick = false, tasks = []) {
   app.quickRound = open && quick;
+  // The round says what each worker is doing. A quick change has no plan card to
+  // read it back out of, so this is the only place its title comes from.
+  app.taskTitles = open ? tasks : [];
+  if (open && tasks.length) showTaskTitles(tasks);
   app.roundOpen = open;
   if (open) {
     // A new round starts from clean cards.

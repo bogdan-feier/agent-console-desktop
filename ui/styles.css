@@ -294,6 +294,9 @@ select { background: var(--sunken); border: 1px solid var(--line); border-radius
 .dialog-actions .problem-line { flex: 1 0 100%; }
 /* Sits with the commit message, not with the buttons: it is part of the commit. */
 .push-line { flex: 1 0 100%; margin: -4px 0 4px; }
+.task .found { margin-top: 6px; }
+.task .found summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.task .found textarea { margin-top: 6px; min-height: 70px; }
 .dialog-actions .spacer { flex: 1; }
 
 /* Narrow windows: stack everything */

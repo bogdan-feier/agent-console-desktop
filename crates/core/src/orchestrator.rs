@@ -255,6 +255,8 @@ impl Orchestrator {
             title: first_line(message),
             instructions: message.to_string(),
             files: Vec::new(),
+            // Nothing was read beforehand: a quick change has no planner.
+            context: String::new(),
         }]);
 
         let workspace = match self.isolation {
@@ -691,10 +693,27 @@ fn file_list(task: &Task) -> String {
 
 fn worker_prompt(task: &Task) -> String {
     format!(
-        "Your task: {}\n\n{}\n\nFiles you may create or edit:\n{}",
+        "Your task: {}\n\n{}\n\nFiles you may create or edit:\n{}{}",
         task.title,
         task.instructions,
-        file_list(task)
+        file_list(task),
+        planner_context(task)
+    )
+}
+
+/// What the planner found, handed to the worker so it does not read the project a
+/// second time. Said to be second-hand on purpose: it is a summary written by
+/// someone else, and a worker that trusts a wrong line without checking is worse
+/// than one that reads the file.
+fn planner_context(task: &Task) -> String {
+    let found = task.context.trim();
+    if found.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nWhat the planner found while reading the project, so you do not have to \
+         look it up again. It is a summary, not the files themselves: work from it, and \
+         read the file yourself if something does not match or is missing.\n\n{found}"
     )
 }
 
@@ -821,4 +840,41 @@ fn commit_style(subjects: &[String]) -> String {
 /// The first line of the user's message, for the task's title.
 fn first_line(message: &str) -> String {
     message.lines().find(|line| !line.trim().is_empty()).unwrap_or(message).trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_worker_is_told_what_the_planner_already_read() {
+        let task = Task {
+            title: "Add farewell()".to_string(),
+            instructions: "Add it next to greet.".to_string(),
+            files: vec!["app.py".to_string()],
+            context: "greet(name) is at app.py:12 and returns an f-string. Tests use \
+                      plain asserts, no fixtures."
+                .to_string(),
+        };
+
+        let prompt = worker_prompt(&task);
+
+        assert!(prompt.contains("greet(name) is at app.py:12"), "{prompt}");
+        assert!(prompt.contains("read the file yourself if something does not match"), "{prompt}");
+    }
+
+    #[test]
+    fn a_task_with_nothing_found_says_nothing_about_it() {
+        let task = Task {
+            title: "Add farewell()".to_string(),
+            instructions: "Add it next to greet.".to_string(),
+            files: vec!["app.py".to_string()],
+            context: "   ".to_string(),
+        };
+
+        let prompt = worker_prompt(&task);
+
+        assert!(!prompt.contains("the planner found"), "no empty heading: {prompt}");
+        assert!(prompt.trim_end().ends_with("app.py"), "{prompt}");
+    }
 }

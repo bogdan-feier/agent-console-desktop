@@ -171,6 +171,11 @@ Rules for the plan:
   stand alone: what to change, the expected behaviour, and which tests to add. Name the
   functions and parts of files to change, so the worker does not have to search for them.
 - List every file the worker may create or edit in \"files\". Give each task its own test file.
+- Put in \"context\" what you found while reading that this worker will need, so it does
+  not have to go and find it again: the signatures it will call or change, where in each
+  file they are, how the project writes its tests, anything about the code that would
+  surprise it. Write only what you actually read, and say where you read it. Do not
+  guess, do not paste whole files, and do not repeat the instructions.
 - Prefer the simplest design that satisfies the request. Do not add scope.
 
 Work economically: find things with Grep and Glob before reading, read only the parts of
@@ -298,6 +303,15 @@ pub struct Task {
     pub instructions: String,
     #[serde(default)]
     pub files: Vec<String>,
+    /// What the planner already found out that this task's worker would otherwise
+    /// have to go and find for itself: where the code lives, what the signatures
+    /// are, how the project does things. The planner has just read the project; the
+    /// worker starts with none of that, and without this it reads the same files
+    /// again. One read instead of one per worker.
+    ///
+    /// `#[serde(default)]` so plans saved before this field existed still load.
+    #[serde(default)]
+    pub context: String,
 }
 
 /// What the planner returns.
@@ -370,9 +384,10 @@ fn plan_schema(max_tasks: usize) -> Value {
                     "properties": {
                         "title": { "type": "string" },
                         "instructions": { "type": "string" },
-                        "files": { "type": "array", "items": { "type": "string" } }
+                        "files": { "type": "array", "items": { "type": "string" } },
+                        "context": { "type": "string" }
                     },
-                    "required": ["title", "instructions", "files"],
+                    "required": ["title", "instructions", "files", "context"],
                     "additionalProperties": false
                 }
             }

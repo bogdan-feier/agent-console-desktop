@@ -66,6 +66,20 @@ function taskFields(task, number) {
   files.setAttribute("aria-label", "Files for task " + number + ", separated by commas");
 
   card.append(title, instructions, files);
+
+  // What the planner read, passed on so the worker does not read it again. Folded
+  // away: it is usually right and rarely interesting, but when a worker goes wrong
+  // this is the first place to look, and it is editable like everything else here.
+  if (task.context && task.context.trim()) {
+    const found = el("details", "found");
+    found.append(el("summary", null, "What the planner found (sent to the worker)"));
+    const text = el("textarea");
+    text.value = task.context;
+    text.dataset.field = "context";
+    text.setAttribute("aria-label", "What the planner found for task " + number);
+    found.append(text);
+    card.append(found);
+  }
   return card;
 }
 
@@ -74,6 +88,7 @@ async function approvePlan(box) {
     title: card.querySelector("[data-field=title]").value,
     instructions: card.querySelector("[data-field=instructions]").value,
     files: card.querySelector("[data-field=files]").value.split(",").map((file) => file.trim()).filter(Boolean),
+    context: card.querySelector("[data-field=context]")?.value ?? "",
   }));
   clearProblem();
   try {

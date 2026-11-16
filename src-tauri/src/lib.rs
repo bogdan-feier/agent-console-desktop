@@ -186,7 +186,7 @@ struct RunEvent<'a> {
 }
 
 /// Where a message from the main message box goes.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SendMode {
     /// To the dispatcher, which answers it or passes it on.
@@ -195,6 +195,8 @@ enum SendMode {
     Brainstorm,
     /// Straight to the planner, to make a plan.
     Plan,
+    /// Straight to one worker, with no plan and no review: the cheap path.
+    Quick,
 }
 
 #[tauri::command]
@@ -313,6 +315,11 @@ async fn start_run(
 fn send(state: State<'_, AppState>, run_id: String, message: String, mode: SendMode) -> CommandResult<()> {
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_message(&run, &message)?;
+    // A quick change opens a round of its own, so the previous one has to be settled
+    // first, exactly as when approving a plan.
+    if mode == SendMode::Quick && run.has_open_round() {
+        return Err("Apply or discard the previous round's changes first.".to_string());
+    }
     dispatch(state.runs_on_disk.clone(), run, orchestrator, message, mode);
     Ok(())
 }
@@ -329,6 +336,7 @@ fn dispatch(
     spawn_phase(store, run, async move {
         match mode {
             SendMode::Dispatcher => orchestrator.ask(&task_run, &message).await,
+            SendMode::Quick => orchestrator.quick(&task_run, &message).await,
             SendMode::Brainstorm => orchestrator.chat(&task_run, PLANNER_ID, &message).await,
             SendMode::Plan => orchestrator.plan(&task_run, Some(&message)).await,
         }

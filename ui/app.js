@@ -79,7 +79,7 @@ function roundAction(command) {
 
 function handle(event) {
   if (event.type === "run_state") return setRunState(event.state);
-  if (event.type === "round") return setRound(event.open);
+  if (event.type === "round") return setRound(event.open, event.quick);
   if (event.type === "checks") return showChecks(event);
 
   const agent = agents[event.agent];

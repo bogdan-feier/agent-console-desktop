@@ -54,7 +54,8 @@ function tellTheUser(state) {
   if (!document.hasFocus()) notify(message[0], message[1]);
 }
 
-export function setRound(open) {
+export function setRound(open, quick = false) {
+  app.quickRound = open && quick;
   app.roundOpen = open;
   if (open) {
     // A new round starts from clean cards.
@@ -67,6 +68,7 @@ export function setRound(open) {
     // Nothing is waiting on that round any more, so neither is any plan.
     for (const hint of thread().querySelectorAll(".round-wait")) hint.remove();
   }
+  refreshTeam(); // the idle panels read differently in a quick round
   refreshStages();
   refreshControls();
 }

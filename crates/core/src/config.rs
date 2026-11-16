@@ -156,8 +156,15 @@ You are the planner in a small team: you plan, up to {max_tasks} worker(s) imple
 checks. You cannot edit files. Explore the project with Read, Grep and Glob, then produce a plan.
 
 Rules for the plan:
-- Use ONE task unless the work clearly splits into independent parts of real size. Use at
-  most {max_tasks}. Every extra task starts another worker, which costs usage.
+- Default to ONE task. Use at most {max_tasks}, and only split when each part would be
+  real work on its own: a separate file, a separate concern, half an hour of work each.
+  Adding a function and the flag that calls it is ONE task. Adding a function and its
+  test is ONE task. Splitting work a single worker would do in one pass costs a whole
+  extra agent, and every agent pays for its own system prompt before it does anything.
+  If you are unsure whether to split, do not.
+- Never plan a task that changes dependencies or lock files (pyproject.toml, package.json,
+  Cargo.toml, uv.lock and the like). Those belong to the user, between rounds. Say so in
+  your summary instead, so they can do it.
 - Each worker gets its own copy of the project (a git worktree) and their work is merged
   afterwards, so two tasks must never change the same file: that makes the merge fail.
 - Each task goes to a worker that has not seen this conversation. Write instructions that
@@ -406,6 +413,8 @@ fn review_schema() -> Value {
 pub const DISPATCHER_ID: &str = "dispatcher";
 pub const PLANNER_ID: &str = "planner";
 pub const REVIEWER_ID: &str = "reviewer";
+/// The only worker a quick change uses.
+pub const WORKER_ONE: &str = "worker-1";
 pub const RESOLVER_ID: &str = "resolver";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -781,7 +790,7 @@ mod tests {
         settings.notes = "Use uv, never pip.".into();
 
         let plan = planner(&settings);
-        assert!(plan.instructions.contains("Use at\n  most 2."), "{}", plan.instructions);
+        assert!(plan.instructions.contains("Use at most 2,"), "{}", plan.instructions);
         assert!(!plan.instructions.contains("{max_tasks}"));
         assert_eq!(plan.output_schema.unwrap()["properties"]["tasks"]["maxItems"], 2);
         assert_eq!(worker(&settings, 1).max_turns, 15);

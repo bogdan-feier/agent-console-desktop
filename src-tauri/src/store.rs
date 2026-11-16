@@ -218,7 +218,7 @@ fn summarise(path: &Path) -> Option<RunSummary> {
                     .and_then(|value| value.as_str().map(str::to_string))
                     .unwrap_or_else(|| summary.state.clone());
             }
-            EventKind::Round { open: true } => summary.rounds += 1,
+            EventKind::Round { open: true, .. } => summary.rounds += 1,
             EventKind::Result { tokens, cost_usd, .. } => {
                 summary.tokens += tokens.input_tokens
                     + tokens.output_tokens
@@ -256,7 +256,7 @@ mod tests {
 
         let events = [
             Event { seq: 0, agent: None, kind: EventKind::RunState { state: RunState::Planning } },
-            Event { seq: 1, agent: None, kind: EventKind::Round { open: true } },
+            Event { seq: 1, agent: None, kind: EventKind::Round { open: true, quick: false } },
             Event {
                 seq: 2,
                 agent: Some("worker-1".to_string()),
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(head.request, "Add tests");
         assert_eq!(head.project_dir, "/code/app");
         assert_eq!(read_back.len(), 4);
-        assert!(matches!(read_back[1].kind, EventKind::Round { open: true }));
+        assert!(matches!(read_back[1].kind, EventKind::Round { open: true, .. }));
 
         let listed = store.list();
         assert_eq!(listed.len(), 1);
@@ -300,7 +300,10 @@ mod tests {
         let store = RunStore::new(folder.path());
         let run = quiet_run("/code/app", "Half a run");
         store.start(&run, models());
-        store.append(&run.id, &Event { seq: 0, agent: None, kind: EventKind::Round { open: true } });
+        store.append(
+            &run.id,
+            &Event { seq: 0, agent: None, kind: EventKind::Round { open: true, quick: false } },
+        );
         // As if the app were killed in the middle of writing a line.
         let mut file = OpenOptions::new().append(true).open(store.path(&run.id)).unwrap();
         file.write_all(b"{\"seq\":1,\"type\":\"ru").unwrap();

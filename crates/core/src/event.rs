@@ -42,6 +42,10 @@ pub enum EventKind {
     /// open, the page offers Apply, Discard and Review again.
     Round {
         open: bool,
+        /// Opened by a quick change: one worker, and no reviewer will look at it.
+        /// `#[serde(default)]` so rounds saved before this field existed still load.
+        #[serde(default)]
+        quick: bool,
     },
     /// A message the user sent to this agent.
     UserMessage {

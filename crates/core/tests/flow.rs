@@ -77,6 +77,37 @@ async fn dispatcher_passes_clear_requests_on_to_be_planned() {
 }
 
 #[tokio::test]
+async fn a_quick_change_runs_one_worker_and_nobody_else() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+    let orchestrator = instant_script();
+
+    supervised(run.clone(), orchestrator.quick(&run, "Add a farewell helper")).await;
+
+    assert_eq!(run.state(), RunState::Done);
+    assert!(run.has_open_round(), "the changes wait for the user, as after a full round");
+    assert_eq!(collected.statuses("worker-1"), ["running", "done"]);
+    for skipped in ["planner", "reviewer", "worker-2", "dispatcher"] {
+        assert!(collected.statuses(skipped).is_empty(), "{skipped} should not have run");
+    }
+    assert!(run.review().is_none(), "nothing was reviewed");
+}
+
+#[tokio::test]
+async fn a_quick_change_admits_that_nobody_reviewed_it() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+
+    supervised(run.clone(), instant_script().quick(&run, "Add a farewell helper")).await;
+
+    let said = collected.of_type("notice");
+    assert!(
+        said.iter().any(|notice| notice["text"].as_str().unwrap_or("").contains("Nobody reviewed")),
+        "the user has to be told what they are not getting: {said:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_round_runs_three_workers_and_one_review() {
     let collected = Collected::default();
     let (run, _) = reviewed_run(&collected).await;

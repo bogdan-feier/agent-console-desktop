@@ -32,6 +32,7 @@ export const PLACEHOLDER = {
   brainstorm: "Think an idea through with the planner",
   plan: "Anything the plan should take into account (optional)",
   planFirst: "Describe the change you want planned",
+  quick: "Describe one small change for a single worker to make",
 };
 
 /// Which lane's colour an agent's output is drawn in.

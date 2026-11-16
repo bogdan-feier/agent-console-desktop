@@ -118,9 +118,24 @@ export function refreshTeam() {
     if (off) {
       empty.textContent = "Not used: Settings allows " + plural(app.settings.worker_count, "worker") + " per plan.";
     } else if (agent.card.task.textContent === "No task this round") {
-      empty.textContent = "The plan has fewer tasks than there are workers, so this one sits out.";
+      // A quick change has no plan at all, so do not blame one.
+      empty.textContent = app.quickRound
+        ? "A quick change uses one worker, so this one sits out."
+        : "The plan has fewer tasks than there are workers, so this one sits out.";
     } else {
       empty.textContent = CARD_EMPTY.worker;
+    }
+  }
+
+  // A quick change never calls the reviewer, so its panel should not say it is
+  // about to look at anything.
+  const reviewer = agents.reviewer;
+  if (reviewer && reviewer.card && reviewer.card.root.dataset.status === "idle") {
+    const empty = reviewer.card.log.querySelector(".empty");
+    if (empty) {
+      empty.textContent = app.quickRound
+        ? "Not used: a quick change is not reviewed. Use \"Review again\" below if you want it looked at."
+        : CARD_EMPTY.reviewer;
     }
   }
 }

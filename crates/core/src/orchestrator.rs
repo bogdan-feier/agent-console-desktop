@@ -24,7 +24,7 @@ use crate::changes::{self, Changes};
 use crate::checks::{self, Checked};
 use crate::config::{
     self, Plan, Review, Route, Routing, Task, DISPATCHER_ID, PLANNER_ID, RESOLVER_ID, REVIEWER_ID,
-    WORKER_COUNT,
+    WORKER_COUNT, WORKER_ONE,
 };
 use crate::event::EventKind;
 use crate::run::{Run, RunState};
@@ -46,6 +46,14 @@ pub enum Isolation {
     /// Everyone works directly in the project folder. Used by tests whose scripted
     /// agents never touch files, and by the planner-only example (planning reads only).
     SharedFolder,
+}
+
+/// What `settle` produced: the round's changes, where they sit, and how the
+/// project's checks went.
+struct Settled {
+    changes: Changes,
+    commit: Option<String>,
+    checked: Option<Checked>,
 }
 
 /// Cheap to clone: it only holds shared pointers.
@@ -179,7 +187,7 @@ impl Orchestrator {
                 }
             }
         };
-        run.open_round(workspace);
+        run.open_round(workspace, false);
 
         run.set_state(RunState::Building);
         // `join_all` polls all these futures at the same time and waits for every one.
@@ -210,22 +218,10 @@ impl Orchestrator {
         // changes made since then.
         let session = run.session(REVIEWER_ID);
         let since = session.as_ref().and_then(|_| run.last_reviewed());
-        let mut checked = None;
-        let (changes, reviewed_commit) = match run.workspace() {
-            Some(workspace) => {
-                if let Err(problem) = self.merge_all(run, &workspace, &finished).await {
-                    run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem, tidy_with: None });
-                    run.set_state(RunState::Done);
-                    return Ok(());
-                }
-                checked = self.run_checks(run, workspace.review_dir()).await;
-                (workspace.review_changes(since.as_deref()).await, workspace.review_commit().await.ok())
-            }
-            None => {
-                let files: Vec<String> = run.tasks().into_iter().flat_map(|task| task.files).collect();
-                (changes::changes_to(run.project(), &files).await, None)
-            }
+        let Some(settled) = self.settle(run, &finished, since.as_deref(), REVIEWER_ID).await else {
+            return Ok(());
         };
+        let Settled { changes, commit: reviewed_commit, checked } = settled;
 
         let spec = config::reviewer(&self.settings());
         let reports = reports_text(run, &finished);
@@ -241,6 +237,60 @@ impl Orchestrator {
             }
         }
         run.set_state(RunState::Done);
+        Ok(())
+    }
+
+    /// One worker, no planner and no reviewer: the cheap path for a small change.
+    ///
+    /// A full round is four Claude Code sessions, and each one pays for its own system
+    /// prompt and tool descriptions before it does anything. That is worth it when
+    /// several workers touch several files and a second pair of eyes is worth having.
+    /// For a one-function change it is not, so this runs the user's words as the only
+    /// task and stops after the project's own checks. What it gives up is the review:
+    /// the changes still go nowhere until the user has looked at the diff and applied
+    /// them.
+    pub async fn quick(&self, run: &Run, message: &str) -> Result<(), AgentError> {
+        run.emit(None, EventKind::UserMessage { text: message.to_string() });
+        run.set_tasks(vec![Task {
+            title: first_line(message),
+            instructions: message.to_string(),
+            files: Vec::new(),
+        }]);
+
+        let workspace = match self.isolation {
+            Isolation::SharedFolder => None,
+            Isolation::Worktrees => {
+                match Workspace::create(run.project(), &run.id, run.next_round_number(), 1).await {
+                    Ok(workspace) => Some(Arc::new(workspace)),
+                    Err(problem) => {
+                        let tidy_with = tidy_offer(&problem, run.rounds_started());
+                        run.emit(Some(WORKER_ONE), EventKind::Error { message: problem, tidy_with });
+                        run.set_state(RunState::Ready);
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        run.open_round(workspace, true);
+
+        run.set_state(RunState::Building);
+        self.build_one(run, 1, false).await;
+
+        let finished = run.finished_workers();
+        if finished.is_empty() {
+            run.set_state(RunState::Done);
+            return Ok(());
+        }
+        if let Some(settled) = self.settle(run, &finished, None, WORKER_ONE).await {
+            let text = match settled.checked.as_ref().map(|checked| checked.passed) {
+                Some(false) => "Done, but the project's checks did not pass. Nothing was \
+                                reviewed: look at the changes before you apply them."
+                    .to_string(),
+                _ => "Done. Nobody reviewed this, so look at the changes before you apply them.".to_string(),
+            };
+            run.emit(None, EventKind::Notice { text });
+            run.set_state(RunState::Done);
+        }
         Ok(())
     }
 
@@ -344,6 +394,39 @@ impl Orchestrator {
     /// `merge_into_review` skips branches that are already in, so after a clash is
     /// resolved we simply try the whole list again. Each round of the loop ends one
     /// clash, and there cannot be more clashes than there are branches.
+    /// Put the finished workers' changes together and run the project's checks.
+    ///
+    /// The half of finishing a round that costs nothing: git and the project's own
+    /// check command, no agent. Both finishing paths start here, the reviewed one
+    /// and the quick one. `None` means it could not be done and the round is over;
+    /// the reason is already on screen, under `blame`.
+    async fn settle(
+        &self,
+        run: &Run,
+        finished: &[usize],
+        since: Option<&str>,
+        blame: &str,
+    ) -> Option<Settled> {
+        let Some(workspace) = run.workspace() else {
+            let files: Vec<String> = run.tasks().into_iter().flat_map(|task| task.files).collect();
+            return Some(Settled {
+                changes: changes::changes_to(run.project(), &files).await,
+                commit: None,
+                checked: None,
+            });
+        };
+        if let Err(problem) = self.merge_all(run, &workspace, finished).await {
+            run.emit(Some(blame), EventKind::Error { message: problem, tidy_with: None });
+            run.set_state(RunState::Done);
+            return None;
+        }
+        Some(Settled {
+            checked: self.run_checks(run, workspace.review_dir()).await,
+            changes: workspace.review_changes(since).await,
+            commit: workspace.review_commit().await.ok(),
+        })
+    }
+
     async fn merge_all(&self, run: &Run, workspace: &Workspace, finished: &[usize]) -> Result<(), String> {
         for _ in 0..=finished.len() {
             match workspace.merge_into_review(finished).await? {
@@ -733,4 +816,9 @@ fn commit_style(subjects: &[String]) -> String {
     }
     let examples = subjects.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n");
     format!("\n\nThis project's recent commit subjects, for the style of yours:\n{examples}")
+}
+
+/// The first line of the user's message, for the task's title.
+fn first_line(message: &str) -> String {
+    message.lines().find(|line| !line.trim().is_empty()).unwrap_or(message).trim().to_string()
 }

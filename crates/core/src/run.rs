@@ -327,14 +327,14 @@ impl Run {
     }
 
     /// Start a round; returns its number (1 for the first round of this run).
-    pub(crate) fn open_round(&self, workspace: Option<Arc<Workspace>>) -> usize {
+    pub(crate) fn open_round(&self, workspace: Option<Arc<Workspace>>, quick: bool) -> usize {
         let number = {
             let mut inner = self.lock();
             inner.rounds_started += 1;
             inner.round = Some(Round { workspace, ..Round::default() });
             inner.rounds_started
         };
-        self.emit(None, EventKind::Round { open: true });
+        self.emit(None, EventKind::Round { open: true, quick });
         number
     }
 
@@ -358,7 +358,7 @@ impl Run {
             });
             inner.round.take().and_then(|round| round.workspace)
         };
-        self.emit(None, EventKind::Round { open: false });
+        self.emit(None, EventKind::Round { open: false, quick: false });
         workspace
     }
 

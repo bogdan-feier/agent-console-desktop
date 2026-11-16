@@ -74,7 +74,7 @@ pub async fn run_agent(
             status.finish(AgentStatus::Done)
         }
         Err(error) => {
-            run.emit(Some(&spec.id), EventKind::Error { message: error.to_string() });
+            run.emit(Some(&spec.id), EventKind::Error { message: error.to_string(), tidy_with: None });
             status.finish(AgentStatus::Error);
         }
     }

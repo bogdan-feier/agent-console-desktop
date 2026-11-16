@@ -79,6 +79,38 @@ pub const CHECK_COMMANDS: &[&str] = &[
     "Bash(git diff *)",
 ];
 
+/// Never allowed, however wide the allow list is. Deny beats allow in Claude Code,
+/// so these hold even with "any command" switched on.
+///
+/// The agents work in copies of the project, but they run as you, on your machine,
+/// with your keys and your sign-ins. This list is about the things that reach past
+/// their copy: your real repository, your account, your machine, your secrets.
+/// Argument patterns are not airtight (`rm -fr` is not `rm -rf`), so treat this as
+/// a seatbelt, not a wall: it stops the careless case, not a determined one.
+pub const DENIED_COMMANDS: &[&str] = &[
+    "Bash(sudo *)",
+    "Bash(rm -rf *)",
+    "Bash(rm -fr *)",
+    "Bash(rm -r *)",
+    // Your repository and your account, as opposed to the worker's own copy.
+    "Bash(git push *)",
+    "Bash(git config *)",
+    "Bash(git remote *)",
+    "Bash(gh *)",
+    // Your secrets: the macOS keychain, and anything that reaches the network and
+    // could carry them out of the machine.
+    "Bash(security *)",
+    "Bash(curl *)",
+    "Bash(wget *)",
+    "Bash(ssh *)",
+    "Bash(scp *)",
+    // Your machine's own settings and running programs.
+    "Bash(launchctl *)",
+    "Bash(defaults *)",
+    "Bash(killall *)",
+    "Bash(shutdown *)",
+];
+
 // --- Limits that keep usage down ------------------------------------------------
 
 /// Default for the most assistant turns (one reply, usually with tool calls) a session
@@ -391,6 +423,8 @@ pub struct AgentSpec {
     pub tools: Vec<String>,
     /// Tools and shell commands it may use without asking.
     pub allowed: Vec<String>,
+    /// Commands it may never run, whatever `allowed` says. Deny wins over allow.
+    pub denied: Vec<String>,
     /// When set, the agent's final answer must be JSON matching this schema.
     pub output_schema: Option<Value>,
     /// Spending cap for this session, in US dollars.
@@ -433,17 +467,30 @@ fn command_rules(settings: &Settings) -> Vec<String> {
     settings.allowed_commands.iter().map(|command| format!("{SHELL_TOOL}({command})")).collect()
 }
 
-/// `extra` plus the shell, when at least one command is allowed. With none allowed the
-/// shell is left out entirely, which also saves its description on every turn.
-fn tools_with_shell(settings: &Settings, extra: &[&str]) -> (Vec<String>, Vec<String>) {
-    let rules = command_rules(settings);
+/// What the agent can see, what it may run without asking, and what it may never run.
+///
+/// With "any command" on, the shell is allowed outright and only [`DENIED_COMMANDS`]
+/// holds it back. Otherwise only the commands from Settings are allowed, and with
+/// none listed the shell is left out entirely, which also saves its description on
+/// every turn.
+fn shell_access(settings: &Settings, extra: &[&str]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut tools = names(&[READ_TOOLS, extra]);
     let mut allowed = tools.clone();
-    if !rules.is_empty() {
+    let mut denied = Vec::new();
+
+    if settings.full_shell {
         tools.push(SHELL_TOOL.to_string());
-        allowed.extend(rules);
+        allowed.push(format!("{SHELL_TOOL}(*)"));
+        denied = names(&[DENIED_COMMANDS]);
+    } else {
+        let rules = command_rules(settings);
+        if !rules.is_empty() {
+            tools.push(SHELL_TOOL.to_string());
+            allowed.extend(rules);
+            denied = names(&[DENIED_COMMANDS]);
+        }
     }
-    (tools, allowed)
+    (tools, allowed, denied)
 }
 
 fn chat_turns(settings: &Settings) -> u32 {
@@ -461,6 +508,7 @@ pub fn dispatcher(settings: &Settings) -> AgentSpec {
         instructions: instructions(DISPATCHER_INSTRUCTIONS, settings),
         tools: reading_tools(settings),
         allowed: reading_tools(settings),
+        denied: Vec::new(),
         output_schema: Some(routing_schema()),
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.dispatcher.max_turns.unwrap_or(DISPATCHER_MAX_TURNS),
@@ -480,6 +528,7 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         instructions: instructions(PLANNER_INSTRUCTIONS, settings),
         tools: reading_tools(settings),
         allowed: reading_tools(settings),
+        denied: Vec::new(),
         output_schema: Some(plan_schema(settings.worker_count)),
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.planner.max_turns.unwrap_or(PLANNER_MAX_TURNS),
@@ -501,7 +550,7 @@ pub fn planner_chat(settings: &Settings) -> AgentSpec {
 
 /// Worker `number`, counting from 1.
 pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
-    let (tools, allowed) = tools_with_shell(settings, EDIT_TOOLS);
+    let (tools, allowed, denied) = shell_access(settings, EDIT_TOOLS);
     AgentSpec {
         id: format!("worker-{number}"),
         role: Role::Worker,
@@ -511,6 +560,7 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
         instructions: instructions(WORKER_INSTRUCTIONS, settings),
         tools,
         allowed,
+        denied,
         output_schema: None,
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.worker.max_turns.unwrap_or(WORKER_MAX_TURNS),
@@ -531,7 +581,7 @@ pub fn worker_chat(settings: &Settings, number: usize) -> AgentSpec {
 
 /// The reviewer, which checks all the workers' changes together.
 pub fn reviewer(settings: &Settings) -> AgentSpec {
-    let (tools, allowed) = tools_with_shell(settings, &[]);
+    let (tools, allowed, denied) = shell_access(settings, &[]);
     AgentSpec {
         id: REVIEWER_ID.to_string(),
         role: Role::Reviewer,
@@ -541,6 +591,7 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
         instructions: instructions(REVIEWER_INSTRUCTIONS, settings),
         tools,
         allowed,
+        denied,
         output_schema: Some(review_schema()),
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.reviewer.max_turns.unwrap_or(REVIEWER_MAX_TURNS),
@@ -572,6 +623,7 @@ pub fn resolver(settings: &Settings) -> AgentSpec {
         effort: settings.worker.effort,
         instructions: instructions(RESOLVER_INSTRUCTIONS, settings),
         allowed: tools.clone(),
+        denied: Vec::new(),
         tools,
         output_schema: None,
         max_budget_usd: settings.max_budget_usd,
@@ -747,5 +799,52 @@ mod tests {
         let routing: Routing =
             serde_json::from_value(json!({"route": "brainstorm", "reply": "Passed on."})).unwrap();
         assert_eq!(routing.route, Route::Brainstorm);
+    }
+
+    #[test]
+    fn any_command_allows_the_shell_outright_but_never_the_denied_ones() {
+        // Nothing listed, and with "any command" on it does not matter.
+        let settings = Settings { full_shell: true, allowed_commands: Vec::new(), ..Settings::default() };
+
+        let worker = worker(&settings, 1);
+
+        assert!(worker.tools.contains(&"Bash".to_string()));
+        assert!(worker.allowed.contains(&"Bash(*)".to_string()));
+        assert!(worker.denied.contains(&"Bash(git push *)".to_string()));
+        assert!(worker.denied.contains(&"Bash(sudo *)".to_string()));
+    }
+
+    #[test]
+    fn a_listed_command_is_allowed_and_an_unlisted_one_is_not() {
+        let settings = Settings {
+            full_shell: false,
+            allowed_commands: vec!["uv run *".to_string()],
+            ..Settings::default()
+        };
+
+        let worker = worker(&settings, 1);
+
+        assert!(worker.allowed.contains(&"Bash(uv run *)".to_string()));
+        assert!(!worker.allowed.contains(&"Bash(*)".to_string()));
+        assert!(!worker.denied.is_empty(), "the deny list applies either way");
+    }
+
+    #[test]
+    fn with_no_commands_at_all_the_shell_is_not_even_offered() {
+        let settings = Settings { allowed_commands: Vec::new(), ..Settings::default() };
+
+        let worker = worker(&settings, 1);
+
+        assert!(!worker.tools.contains(&"Bash".to_string()));
+        assert!(worker.denied.is_empty(), "nothing to deny when there is no shell");
+    }
+
+    #[test]
+    fn the_agents_that_cannot_run_commands_need_no_deny_list() {
+        let settings = Settings { full_shell: true, ..Settings::default() };
+        for spec in [dispatcher(&settings), planner(&settings), resolver(&settings)] {
+            assert!(!spec.tools.contains(&"Bash".to_string()), "{}", spec.id);
+            assert!(spec.denied.is_empty(), "{}", spec.id);
+        }
     }
 }

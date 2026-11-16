@@ -171,7 +171,8 @@ impl Orchestrator {
                     Err(problem) => {
                         // Nothing was started. The plan is still waiting, so the user can
                         // fix the problem (commit, say) and approve again.
-                        run.emit(Some(PLANNER_ID), EventKind::Error { message: problem });
+                        let tidy_with = tidy_offer(&problem, run.rounds_started());
+                        run.emit(Some(PLANNER_ID), EventKind::Error { message: problem, tidy_with });
                         run.set_state(RunState::AwaitingApproval);
                         return Ok(());
                     }
@@ -213,7 +214,7 @@ impl Orchestrator {
         let (changes, reviewed_commit) = match run.workspace() {
             Some(workspace) => {
                 if let Err(problem) = self.merge_all(run, &workspace, &finished).await {
-                    run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem });
+                    run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem, tidy_with: None });
                     run.set_state(RunState::Done);
                     return Ok(());
                 }
@@ -271,16 +272,17 @@ impl Orchestrator {
         };
         match workspace.apply().await {
             Ok(files) => {
-                let count = files.len();
+                let count = crate::plural(files.len(), "file");
+                let is_are = if files.len() == 1 { "is" } else { "are" };
                 let text = match commit_message {
                     None => format!(
-                        "Applied: {count} file(s) are now staged in your project. Look them over with \
+                        "Applied: {count} {is_are} now staged in your project. Look them over with \
                          `git diff --staged`, then commit them."
                     ),
                     Some(message) => match workspace.commit(message).await {
-                        Ok(()) => format!("Applied and committed {count} file(s) to your project."),
+                        Ok(()) => format!("Applied and committed {count} to your project."),
                         Err(problem) => format!(
-                            "Applied: {count} file(s) are staged in your project, but the commit did not \
+                            "Applied: {count} {is_are} staged in your project, but the commit did not \
                              go through ({problem}). Commit them yourself when you have fixed that."
                         ),
                     },
@@ -290,7 +292,10 @@ impl Orchestrator {
                 run.close_round();
                 run.set_state(RunState::Ready);
             }
-            Err(problem) => run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem }),
+            Err(problem) => {
+                let tidy_with = tidy_offer(&problem, run.rounds_started());
+                run.emit(Some(REVIEWER_ID), EventKind::Error { message: problem, tidy_with });
+            }
         }
         Ok(())
     }
@@ -440,7 +445,7 @@ impl Orchestrator {
             Ok(_) => {}
             Err(problem) => {
                 let message = format!("Could not save this worker's changes: {problem}");
-                run.emit(Some(&agent), EventKind::Error { message });
+                run.emit(Some(&agent), EventKind::Error { message, tidy_with: None });
             }
         }
     }
@@ -571,7 +576,7 @@ fn structured_answer<T: DeserializeOwned>(
 
 /// Show an error in an agent's panel and return it.
 fn report(run: &Run, agent: &str, message: &str) -> AgentError {
-    run.emit(Some(agent), EventKind::Error { message: message.to_string() });
+    run.emit(Some(agent), EventKind::Error { message: message.to_string(), tidy_with: None });
     AgentError(message.to_string())
 }
 
@@ -688,4 +693,18 @@ fn fix_prompt(review: &Review, number: usize) -> String {
          Reviewer summary: {}\n\nMust fix in your task:\n{findings}",
         review.summary
     )
+}
+
+/// A commit message to offer, when the problem was the project folder being untidy.
+///
+/// The window turns this into a button, so nobody has to open a terminal to get past
+/// it. The wording matched here is `worktrees::dirty_message`, which both checks use.
+fn tidy_offer(problem: &str, rounds: usize) -> Option<String> {
+    if !problem.contains("uncommitted changes") {
+        return None;
+    }
+    Some(match rounds {
+        0 => "My own changes, before the agents start".to_string(),
+        round => format!("My own changes, before applying round {round}"),
+    })
 }

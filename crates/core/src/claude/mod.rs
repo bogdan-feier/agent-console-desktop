@@ -72,6 +72,22 @@ impl AgentRunner for ClaudeRunner {
     ) -> Result<AgentOutput, AgentError> {
         let agent = spec.id.as_str();
 
+        // "Any command" promises that pushing, sudo and the rest are still refused,
+        // and that promise rests on a flag an older claude may not have. Say so
+        // rather than let the window claim a limit that is not being applied.
+        if command::deny_list_ignored(spec, self.location.known_flags.as_ref()) {
+            run.emit(
+                Some(agent),
+                EventKind::Notice {
+                    text: "This version of claude cannot be told which commands to refuse, so \
+                           \"any command\" really does mean any command: pushing, sudo and \
+                           reaching the network are not blocked. Updating Claude Code restores \
+                           those limits."
+                        .to_string(),
+                },
+            );
+        }
+
         let mut command = Command::new(&self.location.program);
         command
             .args(command::build_args(spec, resume, self.location.known_flags.as_ref()))

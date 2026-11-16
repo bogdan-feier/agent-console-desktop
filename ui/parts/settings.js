@@ -113,7 +113,9 @@ function fillModelSection(values) {
 function fillSettingsForm(values) {
   fillModelSection(values);
   $("commands").value = values.allowed_commands.join("\n");
+  $("full-shell").checked = values.full_shell;
   $("web-access").checked = values.web_access;
+  showCommandList();
   $("use-mcp").checked = values.use_mcp_servers;
   $("resolve-conflicts").checked = values.resolve_conflicts;
   $("worker-count").value = String(values.worker_count);
@@ -137,6 +139,7 @@ function readSettingsForm() {
   values.chat_max_turns = readTurns("chat-turns");
   values.use_mcp_servers = $("use-mcp").checked;
   values.web_access = $("web-access").checked;
+  values.full_shell = $("full-shell").checked;
   values.resolve_conflicts = $("resolve-conflicts").checked;
   // The Rust side trims each line and drops the empty ones and the repeats.
   values.allowed_commands = $("commands").value.split("\n");
@@ -242,7 +245,16 @@ async function testNotification() {
     + "Notifications in System Settings, and that Do Not Disturb is off.";
 }
 
+/// With "any command" on, the list below it decides nothing, so grey it out rather
+/// than leave the user wondering which of the two is in force.
+function showCommandList() {
+  const unrestricted = $("full-shell").checked;
+  $("commands").disabled = unrestricted;
+  $("suggest-commands").disabled = unrestricted;
+}
+
 export function wireSettings() {
+  $("full-shell").addEventListener("change", showCommandList);
   $("open-settings").addEventListener("click", openSettings);
   $("test-notification").addEventListener("click", testNotification);
   $("suggest-commands").addEventListener("click", () => {

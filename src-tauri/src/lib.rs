@@ -12,7 +12,7 @@ mod store;
 use std::collections::HashMap;
 use std::env;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_console_core::claude::{locate, ClaudeRunner};
@@ -24,7 +24,7 @@ use agent_console_core::orchestrator::{
 use agent_console_core::project;
 use agent_console_core::run::EventSink;
 use agent_console_core::settings::{self, Preset, Settings, SharedSettings};
-use agent_console_core::worktrees::{FileChange, Workspace};
+use agent_console_core::worktrees::{self, FileChange, Workspace};
 use agent_console_core::{AgentError, AgentRunner, Event, Orchestrator, Run};
 use serde::{Deserialize, Serialize};
 use store::{RunModels, RunStore, RunSummary};
@@ -438,6 +438,25 @@ fn apply_changes(
     Ok(())
 }
 
+/// Commit whatever is uncommitted in the project folder, as the user.
+///
+/// What the window would otherwise have told them to go and do in a terminal. Only
+/// ever called from the button on the "uncommitted changes" error, so the message is
+/// the one that error offered.
+#[tauri::command]
+async fn tidy_project(
+    state: State<'_, AppState>,
+    project_dir: String,
+    message: String,
+) -> CommandResult<usize> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("A commit needs a message.".to_string());
+    }
+    let _ = &state; // the project folder is all this needs
+    worktrees::commit_project(Path::new(&project_dir), message).await
+}
+
 /// Every run this app has saved, newest first.
 ///
 /// This reads every saved run's file, so it is done on a thread of its own: a
@@ -633,6 +652,7 @@ pub fn run() {
             stop_run,
             fresh_session,
             recent_runs,
+            tidy_project,
             open_run
         ])
         .run(tauri::generate_context!())

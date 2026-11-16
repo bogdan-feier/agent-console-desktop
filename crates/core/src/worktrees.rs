@@ -112,13 +112,8 @@ impl Workspace {
             .trim()
             .to_string();
         let changes = git(project_dir, &["status", "--porcelain"]).await?;
-        let changed_files = changes.lines().filter(|line| !line.trim().is_empty()).count();
-        if changed_files > 0 {
-            let files = crate::plural(changed_files, "file");
-            return Err(format!(
-                "The project has uncommitted changes ({files}). Commit or stash them first: the \
-                 workers start from the last commit, and Apply needs a clean folder to put their work in."
-            ));
+        if !changes.trim().is_empty() {
+            return Err(dirty_message(&changes));
         }
         // Forget worktrees whose folders no longer exist (from an app that was
         // force-quit), and the branches that went with them.
@@ -369,23 +364,31 @@ impl Workspace {
 
     /// Put the reviewed changes into the project folder as staged, uncommitted
     /// changes. Returns the files that changed.
+    ///
+    /// The project folder must have nothing uncommitted in it: the merge below writes
+    /// over the files it touches, and anything not committed would be gone for good.
+    /// The project having moved on since the workers started is fine, though. Git works
+    /// out the common ancestor itself, so the merge still means the right thing; it
+    /// only fails if those new commits touched the same lines, and because everything
+    /// is committed by this point, backing out of that loses nothing.
     pub async fn apply(&self) -> Result<Vec<String>, String> {
         let project = &self.project_dir;
-        if !git(project, &["status", "--porcelain"]).await?.trim().is_empty() {
-            return Err(
-                "Your project folder has uncommitted changes now. Commit or stash them, then apply again."
-                    .to_string(),
-            );
+        let dirty = git(project, &["status", "--porcelain"]).await?;
+        if !dirty.trim().is_empty() {
+            return Err(dirty_message(&dirty));
         }
-        let head = git(project, &["rev-parse", "HEAD"]).await?.trim().to_string();
-        if head != self.base {
+
+        if let Err(clash) = git(project, &["merge", "--squash", "-q", &self.review_branch()]).await {
+            // Leave the folder as it was. Safe: there was nothing uncommitted.
+            let _ = git(project, &["reset", "--hard", "-q", "HEAD"]).await;
             return Err(format!(
-                "Your project has new commits since the workers started, so the changes are not applied \
-                 automatically. To bring them in yourself, run: git merge --squash {}",
-                self.review_branch()
+                "Your project gained commits since the workers started, and they changed the same \
+                 lines as this round, so the two could not be put together ({}). Your project is \
+                 untouched. Ask the workers to redo their task against the new code, or discard the \
+                 round.",
+                why(clash)
             ));
         }
-        git(project, &["merge", "--squash", "-q", &self.review_branch()]).await?;
         let staged = git(project, &["diff", "--cached", "--name-only"]).await?;
         Ok(staged.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
     }
@@ -419,6 +422,44 @@ fn why(problem: String) -> String {
         Some(line) => line.trim_start_matches("fatal:").trim_start_matches("error:").trim().to_string(),
         None => problem,
     }
+}
+
+/// The one sentence both dirty-folder checks use. `porcelain` is `git status --porcelain`.
+///
+/// The window watches for this wording and offers to commit the files itself, so the
+/// user never has to leave the app for it. Keep the phrase "uncommitted changes".
+fn dirty_message(porcelain: &str) -> String {
+    let files = porcelain.lines().filter(|line| !line.trim().is_empty()).count();
+    format!(
+        "Your project folder has uncommitted changes ({}). The round cannot be put on top of them, \
+         because applying writes over the files it touches.",
+        crate::plural(files, "file")
+    )
+}
+
+/// Commit everything in the project folder, including untracked files.
+///
+/// This is the app doing what it would otherwise tell the user to go and do in a
+/// terminal. It is their commit, with their git identity and their hooks, so if they
+/// have no identity set git refuses and the reason is passed back for the window.
+pub async fn commit_project(project_dir: &Path, message: &str) -> Result<usize, String> {
+    let porcelain = git(project_dir, &["status", "--porcelain"]).await?;
+    let files = porcelain.lines().filter(|line| !line.trim().is_empty()).count();
+    if files == 0 {
+        return Ok(0);
+    }
+    git(project_dir, &["add", "-A"]).await.map_err(why)?;
+    git(project_dir, &["commit", "-q", "-m", message]).await.map_err(why)?;
+    Ok(files)
+}
+
+/// What is uncommitted in the project folder right now, if anything.
+pub async fn uncommitted(project_dir: &Path) -> Option<String> {
+    let porcelain = git(project_dir, &["status", "--porcelain"]).await.ok()?;
+    if porcelain.trim().is_empty() {
+        return None;
+    }
+    Some(dirty_message(&porcelain))
 }
 
 /// Delete this app's leftover branches that hold nothing.
@@ -793,20 +834,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_refuses_when_the_project_moved_on() {
+    async fn apply_waits_for_the_folder_to_be_tidy_but_not_for_it_to_stand_still() {
         let project = project();
         let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
         fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
         workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
         assert_eq!(workspace.merge_into_review(&[1]).await.unwrap(), Merge::Clean);
 
+        // Something uncommitted would be written over, so applying waits.
         fs::write(project.path().join("b.py"), "y = 2\n").unwrap();
         let problem = workspace.apply().await.unwrap_err();
-        assert!(problem.contains("uncommitted"), "{problem}");
+        assert!(problem.contains("uncommitted changes (1 file)"), "{problem}");
 
-        run_git(project.path(), &["commit", "-qam", "my own work"]);
-        let problem = workspace.apply().await.unwrap_err();
-        assert!(problem.contains("git merge --squash agent-console/"), "{problem}");
+        // Committed, and in another file: the round goes on top of it.
+        run_git(project.path(), &["add", "-A"]);
+        run_git(project.path(), &["commit", "-qm", "my own work"]);
+        let applied = workspace.apply().await.unwrap();
+        assert_eq!(applied, ["a.py"]);
+        assert_eq!(fs::read_to_string(project.path().join("b.py")).unwrap(), "y = 2\n");
         workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_clash_with_the_project_s_own_new_commits_leaves_the_project_untouched() {
+        let project = project();
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "the worker's line\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        assert_eq!(workspace.merge_into_review(&[1]).await.unwrap(), Merge::Clean);
+
+        // The same file, the same line, committed in the project meanwhile.
+        fs::write(project.path().join("a.py"), "my own line\n").unwrap();
+        run_git(project.path(), &["commit", "-qam", "my own work"]);
+
+        let problem = workspace.apply().await.unwrap_err();
+        assert!(problem.contains("could not be put together"), "{problem}");
+        assert!(problem.contains("untouched"), "{problem}");
+        // Nothing half-merged left behind, and my own line is still mine.
+        assert_eq!(fs::read_to_string(project.path().join("a.py")).unwrap(), "my own line\n");
+        assert!(run_git(project.path(), &["status", "--porcelain"]).trim().is_empty());
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn the_app_can_commit_the_folder_itself_so_nobody_needs_a_terminal() {
+        let project = project();
+        fs::write(project.path().join("a.py"), "changed\n").unwrap();
+        fs::write(project.path().join("brand-new.py"), "new\n").unwrap();
+
+        assert!(uncommitted(project.path()).await.is_some());
+        let committed = commit_project(project.path(), "wip").await.unwrap();
+        assert_eq!(committed, 2, "the untracked file counts too");
+
+        assert!(uncommitted(project.path()).await.is_none());
+        assert_eq!(commit_project(project.path(), "wip").await.unwrap(), 0, "nothing left to commit");
     }
 }

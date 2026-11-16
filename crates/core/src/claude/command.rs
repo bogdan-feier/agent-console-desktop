@@ -19,6 +19,7 @@ pub const NO_MCP_SERVERS: &str = "--strict-mcp-config";
 /// every session, so one session can reuse what another put in the prompt cache.
 pub const SHARED_SYSTEM_PROMPT: &str = "--exclude-dynamic-system-prompt-sections";
 const EFFORT: &str = "--effort";
+const DENIED: &str = "--disallowedTools";
 
 /// `known_flags` is what this version of `claude` lists in `--help` (see
 /// `locate.rs`); `None` means it is not known. The usage-saving flags above are only
@@ -50,6 +51,11 @@ pub fn build_args(
     }
     push(&mut args, "--tools", &spec.tools.join(","));
     push(&mut args, "--allowedTools", &spec.allowed.join(","));
+    // Deny wins over allow in Claude Code, so this holds even where `allowed` says
+    // "any command". Passed unless this claude is known not to have the flag.
+    if !spec.denied.is_empty() && !deny_list_ignored(spec, known_flags) {
+        push(&mut args, DENIED, &spec.denied.join(","));
+    }
     // Keeps Claude Code's normal system prompt and adds this agent's role on top.
     push(&mut args, "--append-system-prompt", &spec.instructions);
     push(&mut args, "--max-turns", &spec.max_turns.to_string());
@@ -76,6 +82,13 @@ pub fn build_args(
     args
 }
 
+/// True when this agent has commands it must never run, but this `claude` has no way
+/// to be told about them. The caller says so out loud: a limit the user was promised
+/// and is not getting is worth a line on the screen.
+pub fn deny_list_ignored(spec: &AgentSpec, known_flags: Option<&HashSet<String>>) -> bool {
+    !spec.denied.is_empty() && known_flags.is_some_and(|flags| !flags.contains(DENIED))
+}
+
 fn push(args: &mut Vec<String>, flag: &str, value: &str) {
     args.push(flag.to_string());
     args.push(value.to_string());
@@ -94,6 +107,10 @@ mod tests {
 
     fn has(args: &[String], flag: &str) -> bool {
         args.iter().any(|arg| arg == flag)
+    }
+
+    fn flags(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
     }
 
     fn all_known() -> HashSet<String> {
@@ -165,5 +182,31 @@ mod tests {
         let args = build_args(&config::worker(&settings, 1), None, Some(&all_known()));
         assert!(!has(&args, NO_MCP_SERVERS));
         assert!(has(&args, NO_SKILLS));
+    }
+
+    #[test]
+    fn what_may_never_be_run_is_passed_along() {
+        let settings = Settings { full_shell: true, ..Settings::default() };
+        let args = build_args(&config::worker(&settings, 1), None, Some(&flags(&["--disallowedTools"])));
+
+        let denied = value_after(&args, "--disallowedTools");
+        assert!(denied.contains("Bash(git push *)"), "{denied}");
+        assert!(value_after(&args, "--allowedTools").contains("Bash(*)"));
+    }
+
+    #[test]
+    fn an_older_claude_that_cannot_refuse_is_not_handed_the_flag() {
+        let settings = Settings { full_shell: true, ..Settings::default() };
+        let spec = config::worker(&settings, 1);
+        let old = flags(&["--allowedTools"]);
+
+        assert!(deny_list_ignored(&spec, Some(&old)), "the caller must be able to say so");
+        assert!(!build_args(&spec, None, Some(&old)).iter().any(|arg| arg == "--disallowedTools"));
+    }
+
+    #[test]
+    fn an_agent_with_no_shell_has_nothing_to_refuse() {
+        let spec = config::dispatcher(&Settings::default());
+        assert!(!deny_list_ignored(&spec, Some(&flags(&["--allowedTools"]))));
     }
 }

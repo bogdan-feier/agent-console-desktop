@@ -114,6 +114,12 @@ pub struct Settings {
     /// not on the list is refused, because nobody is there to approve it. An empty list
     /// takes the shell away from them completely.
     pub allowed_commands: Vec<String>,
+    /// Let workers and the reviewer run any command, instead of only the ones listed
+    /// above. `DENIED_COMMANDS` still holds, because an agent that can run anything
+    /// can also reach past its own copy of the project: your real repository, your
+    /// account, your keychain, your machine.
+    #[serde(default)]
+    pub full_shell: bool,
     /// Let the dispatcher and the planner use web search and fetch web pages. Only these
     /// two: they cannot edit files or run commands, so a web page that tries to give
     /// them instructions cannot make them change anything.
@@ -196,6 +202,7 @@ impl Settings {
             max_budget_usd: budget,
             use_mcp_servers: false,
             allowed_commands: default_commands(),
+            full_shell: false,
             web_access: false,
             worker_count: WORKER_COUNT,
             chat_max_turns: None,

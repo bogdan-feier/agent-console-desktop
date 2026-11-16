@@ -66,6 +66,13 @@ pub enum EventKind {
     },
     Error {
         message: String,
+        /// When what stopped this was the project folder having uncommitted changes,
+        /// the commit message to offer, so the window can put them away itself
+        /// instead of sending the user to a terminal. `None` for anything else.
+        ///
+        /// `#[serde(default)]` so runs saved before this field existed still load.
+        #[serde(default)]
+        tidy_with: Option<String>,
     },
     /// The agent finished (or hit a limit); how much it used.
     Result {

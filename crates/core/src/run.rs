@@ -339,6 +339,11 @@ impl Run {
     }
 
     /// The number the next round will get.
+    /// How many rounds this run has opened so far.
+    pub(crate) fn rounds_started(&self) -> usize {
+        self.lock().rounds_started
+    }
+
     pub(crate) fn next_round_number(&self) -> usize {
         self.lock().rounds_started + 1
     }
@@ -452,7 +457,7 @@ impl Run {
     /// that will never end, with Stop unable to help because nothing is listening.
     pub fn phase_crashed(&self, message: &str) {
         self.end_phase();
-        self.emit(None, EventKind::Error { message: message.to_string() });
+        self.emit(None, EventKind::Error { message: message.to_string(), tidy_with: None });
         self.set_state(RunState::Failed);
     }
 

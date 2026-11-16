@@ -151,6 +151,10 @@
       <section class="settings-section" aria-labelledby="permissions-title">
         <h3 id="permissions-title">Permissions</h3>
         <p class="hint">Agents run with nobody there to click "allow", so anything not allowed here is refused. Only workers can edit files, and only in their own copy of the project.</p>
+        <label class="switch">
+          <input type="checkbox" id="full-shell">
+          <span>Let the workers and the reviewer run any command <span class="hint">(no list to keep; they still cannot push, sudo, read your keychain or reach the network &mdash; and they can run anything else, including commands that change files outside their own copy of the project)</span></span>
+        </label>
         <div class="field-row">
           <label for="commands">Shell commands the workers and the reviewer may run, one per line</label>
           <button type="button" id="suggest-commands" title="Look at the project's files and offer the usual commands for that kind of project">Suggest from this project</button>

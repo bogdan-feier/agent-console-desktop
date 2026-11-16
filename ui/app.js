@@ -25,7 +25,7 @@ import { canNotify, invoke, listen } from "./parts/tauri.js";
 import {
   addStep, addToThread, addToTurn, endTurn, place, showRunTotal, showUsage, startTurn, thread, youSaid,
 } from "./parts/turns.js";
-import { AUTH_WORDS, count } from "./parts/words.js";
+import { AUTH_WORDS, count, plural } from "./parts/words.js";
 
 // --- Sending ----------------------------------------------------------------
 
@@ -85,7 +85,7 @@ function handle(event) {
   const agent = agents[event.agent];
   if (!agent) {
     // Something about the run as a whole.
-    if (event.type === "error") addToThread(el("div", "problem", event.message));
+    if (event.type === "error") addToThread(problemBox(event));
     if (event.type === "notice") addToThread(el("div", "note", event.text));
     return;
   }
@@ -115,7 +115,7 @@ function handle(event) {
     }
     case "tool_error": addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
     case "notice": place(agent, el("div", "note", event.text)); break;
-    case "error": place(agent, el("div", "problem", event.message)); break;
+    case "error": place(agent, problemBox(event)); break;
     case "result":
       showUsage(agent, event);
       watchSessionLength(agent, event);
@@ -123,6 +123,30 @@ function handle(event) {
     case "plan": showPlan(event); break;
     case "review": showReview(agent, event); break;
   }
+}
+
+/// Something went wrong. When the app can clear it up itself, offer that: a folder
+/// with uncommitted changes in it is the app's job to put away, not an errand.
+function problemBox(event) {
+  const box = el("div", "problem", event.message);
+  if (!event.tidy_with || app.readOnly) return box;
+
+  const commit = button("Commit my changes and carry on", async () => {
+    commit.disabled = true;
+    try {
+      const files = await invoke("tidy_project", {
+        projectDir: app.runFolder || app.folder,
+        message: event.tidy_with,
+      });
+      commit.replaceWith(el("span", "allowed",
+        " Committed " + plural(files, "file") + ". Try again now."));
+    } catch (error) {
+      commit.replaceWith(el("span", "problem", " " + String(error)));
+    }
+  });
+  box.append(el("p", "hint", 'Committed as "' + event.tidy_with + '", so nothing is lost.'));
+  box.append(commit);
+  return box;
 }
 
 /// A step that was refused. When it was a shell command, offer to allow it:

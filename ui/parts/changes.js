@@ -1,7 +1,7 @@
 // The Changes window: what a round would put into your project, and the two
 // ways to accept it (staged only, or staged and committed).
 
-import { $, el, showProblem } from "./dom.js";
+import { $, el, recall, remember, showProblem } from "./dom.js";
 import { app } from "./state.js";
 import { invoke } from "./tauri.js";
 import { plural } from "./words.js";
@@ -20,6 +20,8 @@ export async function openChanges() {
     const changes = await invoke("round_changes", { runId: app.runId });
     files = changes.files;
     $("commit-message").value = changes.suggested_message;
+    // Whether to push is a habit, not a per-round decision, so it is remembered.
+    $("push-after-commit").checked = recall("push-after-commit") === "yes";
     showFileList();
     if (files.length) showFile(0);
   } catch (error) {
@@ -86,8 +88,10 @@ async function apply(commit) {
     $("changes-notice").textContent = "Write a commit message first.";
     return;
   }
+  const push = commit && $("push-after-commit").checked;
+  remember("push-after-commit", push ? "yes" : "no");
   try {
-    await invoke("apply_changes", { runId: app.runId, commitMessage: commit ? message : null });
+    await invoke("apply_changes", { runId: app.runId, commitMessage: commit ? message : null, push });
     $("changes").close();
   } catch (error) {
     $("changes-notice").textContent = typeof error === "string" ? error : String(error);

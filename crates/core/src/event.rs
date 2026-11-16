@@ -143,10 +143,12 @@ mod tests {
             summary: "ok".to_string(),
             must_fix: vec![],
             consider: vec![],
+            commit_message: "add the thing".to_string(),
         };
         let event = Event { seq: 0, agent: None, kind: EventKind::Review(review) };
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(value["type"], "review");
         assert_eq!(value["verdict"], "approve");
+        assert_eq!(value["commit_message"], "add the thing");
     }
 }

@@ -203,7 +203,13 @@ Work economically: read only what you need, and run the tests once unless someth
 
 Verdict \"approve\" only if there is nothing that must be fixed. Put each required fix in
 \"must_fix\" with the number of the task whose worker should fix it, and the problem as
-\"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".";
+\"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".
+
+In \"commit_message\", write the subject line for a commit of all this work: one line, at
+most 72 characters, imperative mood, describing what the change does rather than listing
+the tasks. Match the style of the project's recent commit subjects, shown in the prompt:
+if they carry a prefix such as \"feat:\" or \"fix:\", use one. Write it as the author of
+the change; do not mention the review, this app, or who or what wrote the code.";
 
 /// The resolver runs inside a merge that git could not finish. Its whole job is to
 /// make the clashing files whole again without losing either worker's work.
@@ -318,6 +324,11 @@ pub struct Review {
     pub must_fix: Vec<Finding>,
     #[serde(default)]
     pub consider: Vec<String>,
+    /// A commit message for the round, written by the reviewer: it has just read
+    /// every change together, which is exactly what a commit message describes.
+    /// `#[serde(default)]` so reviews saved before this field existed still load.
+    #[serde(default)]
+    pub commit_message: String,
 }
 
 impl Review {
@@ -382,9 +393,10 @@ fn review_schema() -> Value {
                     "additionalProperties": false
                 }
             },
-            "consider": { "type": "array", "items": { "type": "string" } }
+            "consider": { "type": "array", "items": { "type": "string" } },
+            "commit_message": { "type": "string" }
         },
-        "required": ["verdict", "summary", "must_fix", "consider"],
+        "required": ["verdict", "summary", "must_fix", "consider", "commit_message"],
         "additionalProperties": false
     })
 }

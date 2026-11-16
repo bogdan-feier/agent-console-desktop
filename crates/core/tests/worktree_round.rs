@@ -135,7 +135,7 @@ async fn workers_build_in_their_own_worktrees_and_apply_stages_the_result() {
     assert!(second_review.contains("+value = 'fixed'"), "{second_review}");
     assert!(!second_review.contains("file2.py"), "only the change since the first review");
 
-    supervised(run.clone(), orchestrator.apply(&run, None)).await;
+    supervised(run.clone(), orchestrator.apply(&run, None, false)).await;
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(fs::read_to_string(project.path().join("file1.py")).unwrap(), "value = 'fixed'\n");
     let status = git(project.path(), &["status", "--porcelain"]);
@@ -269,7 +269,7 @@ async fn the_resolver_merges_two_workers_changes_to_the_same_lines() {
     // The round carried on: the reviewer saw the merged file and approved it.
     assert!(collected.of_type("review").iter().any(|event| event["verdict"] == "approve"));
 
-    supervised(run.clone(), orchestrator.apply(&run, Some("both changes"))).await;
+    supervised(run.clone(), orchestrator.apply(&run, Some("both changes"), false)).await;
     assert_eq!(run.state(), RunState::Ready);
     assert_eq!(fs::read_to_string(project.path().join("shared.py")).unwrap(), "value = 1\nalso = 2\n");
     let log = git(project.path(), &["log", "--oneline"]);
@@ -383,7 +383,7 @@ async fn a_round_can_be_picked_up_after_the_app_is_restarted() {
     assert_eq!(again.session("planner").as_deref(), Some("s-planner"), "the planner can be resumed");
 
     // And the round really can be finished: the worktrees are the same ones.
-    supervised(again.clone(), orchestrator.apply(&again, None)).await;
+    supervised(again.clone(), orchestrator.apply(&again, None, false)).await;
     assert_eq!(again.state(), RunState::Ready);
     let staged = git(project.path(), &["diff", "--cached", "--name-only"]);
     assert!(staged.contains("file1.py") && staged.contains("file2.py"), "staged: {staged}");

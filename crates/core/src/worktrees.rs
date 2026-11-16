@@ -393,6 +393,18 @@ impl Workspace {
         Ok(staged.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
     }
 
+    /// Send the project's current branch to its remote.
+    ///
+    /// Plain `git push`, with nothing guessed: no remote invented, no upstream set,
+    /// no force. If the branch has no upstream, or the remote has moved on, or the
+    /// credentials are not there, git says so and that is what the window shows.
+    pub async fn push(&self) -> Result<String, String> {
+        git(&self.project_dir, &["push"]).await.map_err(why)?;
+        // Only for the sentence afterwards, so an unnamed branch is no failure.
+        let branch = git(&self.project_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+        Ok(branch.map(|name| name.trim().to_string()).unwrap_or_default())
+    }
+
     /// Commit what [`apply`] staged, as you, with your hooks. Anything else you had
     /// staged would go in too, so this is only called right after a clean apply.
     ///
@@ -435,6 +447,14 @@ fn dirty_message(porcelain: &str) -> String {
          because applying writes over the files it touches.",
         crate::plural(files, "file")
     )
+}
+
+/// The subjects of the project's last few commits, as the reviewer's example of the
+/// style to write its own commit message in. Empty when there are none to show.
+pub async fn recent_subjects(project_dir: &Path) -> Vec<String> {
+    let log = git(project_dir, &["log", "-8", "--no-merges", "--format=%s"]).await;
+    log.map(|text| text.lines().map(str::to_string).filter(|line| !line.is_empty()).collect())
+        .unwrap_or_default()
 }
 
 /// Commit everything in the project folder, including untracked files.
@@ -873,6 +893,56 @@ mod tests {
         // Nothing half-merged left behind, and my own line is still mine.
         assert_eq!(fs::read_to_string(project.path().join("a.py")).unwrap(), "my own line\n");
         assert!(run_git(project.path(), &["status", "--porcelain"]).trim().is_empty());
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_commit_says_exactly_what_it_was_given_and_nothing_else() {
+        let project = project();
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        workspace.merge_into_review(&[1]).await.unwrap();
+        workspace.apply().await.unwrap();
+
+        workspace.commit("feat: add the thing").await.unwrap();
+
+        let body = run_git(project.path(), &["log", "-1", "--format=%B"]);
+        assert_eq!(body.trim(), "feat: add the thing", "no trailer is ever added: {body:?}");
+        let author = run_git(project.path(), &["log", "-1", "--format=%an <%ae>"]);
+        assert_eq!(author.trim(), "Test <test@example.com>", "the commit is the user's own");
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_push_with_nowhere_to_push_to_says_so_rather_than_inventing_a_remote() {
+        let project = project();
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+
+        let problem = workspace.push().await.unwrap_err();
+        assert!(problem.contains("No configured push destination"), "{problem}");
+        workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_push_goes_to_the_remote_and_names_the_branch() {
+        let project = project();
+        let remote = tempfile::tempdir().unwrap();
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(project.path(), &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+        let branch = run_git(project.path(), &["rev-parse", "--abbrev-ref", "HEAD"]);
+        run_git(project.path(), &["push", "-q", "-u", "origin", branch.trim()]);
+
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        workspace.merge_into_review(&[1]).await.unwrap();
+        workspace.apply().await.unwrap();
+        workspace.commit("feat: add the thing").await.unwrap();
+
+        assert_eq!(workspace.push().await.unwrap(), branch.trim());
+        let there = run_git(remote.path(), &["log", "-1", "--format=%s"]);
+        assert_eq!(there.trim(), "feat: add the thing", "the remote has it");
         workspace.remove().await;
     }
 

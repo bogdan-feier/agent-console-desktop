@@ -92,6 +92,10 @@
       <span>Commit message</span>
       <input type="text" id="commit-message" autofocus placeholder="What these changes do">
     </label>
+    <label class="switch push-line">
+      <input type="checkbox" id="push-after-commit">
+      <span>and push <span class="hint">(<code>git push</code> on your current branch, after the commit)</span></span>
+    </label>
     <button type="button" id="changes-close">Close</button>
     <span class="spacer"></span>
     <button type="button" id="apply-only" title="Put the changes in your project as staged changes, and commit them yourself">Apply only</button>

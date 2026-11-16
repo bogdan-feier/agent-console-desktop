@@ -30,7 +30,7 @@ use crate::event::EventKind;
 use crate::run::{Run, RunState};
 use crate::runner::{run_agent, AgentError, AgentOutput, AgentRunner};
 use crate::settings::{self, Settings, SharedSettings};
-use crate::worktrees::{FileChange, Merge, Workspace};
+use crate::worktrees::{self, FileChange, Merge, Workspace};
 
 /// Start of the prompt a worker gets when the reviewer sends its work back.
 pub const FIX_PROMPT_MARKER: &str = "The reviewer asked for changes to your task.";
@@ -232,7 +232,8 @@ impl Orchestrator {
         let prompt = match session {
             Some(_) => re_review_prompt(&reports, &changes),
             None => review_prompt(&run.tasks(), &reports, &changes),
-        } + &checks_text(checked.as_ref());
+        } + &checks_text(checked.as_ref())
+            + &commit_style(&worktrees::recent_subjects(run.project()).await);
         if let Ok(output) = run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await {
             if let Ok(review) = structured_answer::<Review>(run, REVIEWER_ID, &output) {
                 run.record_review(review.clone(), reviewed_commit);
@@ -260,7 +261,7 @@ impl Orchestrator {
 
     /// Bring the round's changes into the project as staged changes, and close the
     /// round. If that is not possible, the round stays open and the reason is shown.
-    pub async fn apply(&self, run: &Run, commit_message: Option<&str>) -> Result<(), AgentError> {
+    pub async fn apply(&self, run: &Run, commit_message: Option<&str>, push: bool) -> Result<(), AgentError> {
         let Some(workspace) = run.workspace() else {
             let text = "Round closed. Without worktrees the agents work in the project folder \
                         itself, so there was nothing to bring over."
@@ -280,7 +281,22 @@ impl Orchestrator {
                          `git diff --staged`, then commit them."
                     ),
                     Some(message) => match workspace.commit(message).await {
-                        Ok(()) => format!("Applied and committed {count} to your project."),
+                        Ok(()) => {
+                            let done = format!("Applied and committed {count} to your project.");
+                            match push {
+                                false => done,
+                                true => match workspace.push().await {
+                                    Ok(branch) if branch.is_empty() => {
+                                        format!("{done} Pushed.")
+                                    }
+                                    Ok(branch) => format!("{done} Pushed {branch}."),
+                                    Err(problem) => format!(
+                                        "{done} The push did not go through ({problem}). The \
+                                         commit is there; push it when you have sorted that out."
+                                    ),
+                                },
+                            }
+                        }
                         Err(problem) => format!(
                             "Applied: {count} {is_are} staged in your project, but the commit did not \
                              go through ({problem}). Commit them yourself when you have fixed that."
@@ -707,4 +723,14 @@ fn tidy_offer(problem: &str, rounds: usize) -> Option<String> {
         0 => "My own changes, before the agents start".to_string(),
         round => format!("My own changes, before applying round {round}"),
     })
+}
+
+/// The project's own commit subjects, so the reviewer's commit message reads like the
+/// ones already in the log rather than like a machine's.
+fn commit_style(subjects: &[String]) -> String {
+    if subjects.is_empty() {
+        return String::new();
+    }
+    let examples = subjects.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n");
+    format!("\n\nThis project's recent commit subjects, for the style of yours:\n{examples}")
 }

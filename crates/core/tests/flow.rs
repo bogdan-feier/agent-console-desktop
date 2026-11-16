@@ -123,7 +123,7 @@ async fn applying_closes_the_round_and_ends_the_workers_sessions() {
     assert!(can_approve(&run).is_err(), "a new plan waits until this round is finished");
     assert!(can_chat(&run, "worker-1", "hi").is_ok());
 
-    supervised(run.clone(), orchestrator.apply(&run, None)).await;
+    supervised(run.clone(), orchestrator.apply(&run, None, false)).await;
 
     assert_eq!(run.state(), RunState::Ready);
     assert!(!run.has_open_round());

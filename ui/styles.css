@@ -292,6 +292,8 @@ select { background: var(--sunken); border: 1px solid var(--line); border-radius
 .switch .hint { display: block; }
 .dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 22px 16px; border-top: 1px solid var(--line); }
 .dialog-actions .problem-line { flex: 1 0 100%; }
+/* Sits with the commit message, not with the buttons: it is part of the commit. */
+.push-line { flex: 1 0 100%; margin: -4px 0 4px; }
 .dialog-actions .spacer { flex: 1; }
 
 /* Narrow windows: stack everything */

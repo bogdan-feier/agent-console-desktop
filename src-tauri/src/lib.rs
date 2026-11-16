@@ -415,25 +415,36 @@ async fn round_changes(state: State<'_, AppState>, run_id: String) -> CommandRes
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let files = orchestrator.round_changes(&run).await?;
+    // The reviewer has read every change together, so its message beats anything
+    // worked out from the plan. The plan, and then the original request, are what
+    // is left when there is no review yet.
+    let reviewed = run.review().map(|review| review.commit_message).unwrap_or_default();
     let summary = run.plan_summary();
-    let suggested_message = if summary.trim().is_empty() { run.request.clone() } else { summary };
+    let suggested_message = [reviewed, summary, run.request.clone()]
+        .into_iter()
+        .find(|text| !text.trim().is_empty())
+        .unwrap_or_default();
     Ok(RoundChanges { files, suggested_message: first_line(&suggested_message) })
 }
 
 /// Apply the round's changes. With a message, they are committed too; without
-/// one, they are left staged for you to commit yourself.
+/// one, they are left staged for you to commit yourself. `push` sends the commit
+/// to the remote afterwards, and is ignored without a message: there would be
+/// nothing of this round to push.
 #[tauri::command]
 fn apply_changes(
     state: State<'_, AppState>,
     run_id: String,
     commit_message: Option<String>,
+    push: Option<bool>,
 ) -> CommandResult<()> {
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let message = commit_message.map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
+    let push = push.unwrap_or(false) && message.is_some();
     let task_run = run.clone();
     spawn_phase(state.runs_on_disk.clone(), run, async move {
-        orchestrator.apply(&task_run, message.as_deref()).await
+        orchestrator.apply(&task_run, message.as_deref(), push).await
     });
     Ok(())
 }

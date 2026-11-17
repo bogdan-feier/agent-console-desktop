@@ -423,16 +423,7 @@ async fn round_changes(state: State<'_, AppState>, run_id: String) -> CommandRes
     let (run, orchestrator) = state.find_live(&run_id)?;
     can_finish_round(&run)?;
     let files = orchestrator.round_changes(&run).await?;
-    // The reviewer has read every change together, so its message beats anything
-    // worked out from the plan. The plan, and then the original request, are what
-    // is left when there is no review yet.
-    let reviewed = run.review().map(|review| review.commit_message).unwrap_or_default();
-    let summary = run.plan_summary();
-    let suggested_message = [reviewed, summary, run.request.clone()]
-        .into_iter()
-        .find(|text| !text.trim().is_empty())
-        .unwrap_or_default();
-    Ok(RoundChanges { files, suggested_message: first_line(&suggested_message) })
+    Ok(RoundChanges { files, suggested_message: first_line(&run.suggested_commit_message()) })
 }
 
 /// Apply the round's changes. With a message, they are committed too; without

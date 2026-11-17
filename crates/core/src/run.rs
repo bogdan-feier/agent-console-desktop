@@ -421,6 +421,24 @@ impl Run {
         numbers
     }
 
+    /// The commit message to offer for the open round, from what belongs to this round:
+    /// its review, then its plan (a quick round has none, and the summary left over is
+    /// an earlier round's), then its own task. The run's first message comes last,
+    /// because a run often opens with a question rather than the change being applied.
+    pub fn suggested_commit_message(&self) -> String {
+        let inner = self.lock();
+        let round = inner.round.as_ref();
+        let reviewed =
+            round.and_then(|round| round.review.as_ref()).map(|review| review.commit_message.clone());
+        let planned = round.filter(|round| !round.quick).map(|_| inner.plan_summary.clone());
+        let task = inner.tasks.first().map(|task| task.instructions.clone());
+        [reviewed, planned, task, Some(self.request.clone())]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.trim().is_empty())
+            .unwrap_or_default()
+    }
+
     pub fn review(&self) -> Option<Review> {
         self.lock().round.as_ref().and_then(|round| round.review.clone())
     }
@@ -483,5 +501,39 @@ impl Run {
 
     pub(crate) fn end_phase(&self) {
         self.lock().stop_signal = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(instructions: &str) -> Task {
+        Task {
+            title: instructions.to_string(),
+            instructions: instructions.to_string(),
+            files: Vec::new(),
+            context: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_quick_round_is_named_after_its_own_change() {
+        let run = Run::new("/p", "Why are overdue reminders never sent?", Arc::new(|_: &str, _: &Event| {}));
+        // An earlier planned round left its summary behind.
+        run.set_plan_summary("Add remove-car".to_string());
+
+        run.set_tasks(vec![task("Print No vehicles yet when the list is empty")]);
+        run.open_round(None, true);
+        assert_eq!(run.suggested_commit_message(), "Print No vehicles yet when the list is empty");
+    }
+
+    #[test]
+    fn a_planned_round_uses_its_plan_summary() {
+        let run = Run::new("/p", "Why?", Arc::new(|_: &str, _: &Event| {}));
+        run.set_plan_summary("Add remove-car".to_string());
+        run.set_tasks(vec![task("store part")]);
+        run.open_round(None, false);
+        assert_eq!(run.suggested_commit_message(), "Add remove-car");
     }
 }

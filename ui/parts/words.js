@@ -64,8 +64,8 @@ export const EFFORT_CHOICES = [
 ];
 
 export const PRESET_WORDS = {
-  lean: ["Lean", "Least usage: Sonnet plans, low effort for workers and reviewer"],
-  balanced: ["Balanced", "The default: Opus plans, Sonnet builds and reviews, medium effort"],
+  lean: ["Lean", "Least usage: Sonnet plans, Haiku builds, low effort for the reviewer"],
+  balanced: ["Balanced", "The default: Opus plans, Haiku builds, Sonnet reviews, medium effort"],
   thorough: ["Thorough", "Most careful and most usage: high effort, Opus also reviews"],
 };
 

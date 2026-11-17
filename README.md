@@ -13,7 +13,7 @@ you -> dispatcher -> answers quick questions itself, or passes your message to t
 |---|---|---|---|
 | Dispatcher | Haiku | The front desk: answers quick questions, routes everything else | Read files only |
 | Planner | Opus | Brainstorms with you, then splits the work into up to three tasks | Read files only |
-| Workers 1 to 3 | Sonnet | Each builds one task, in its own git worktree | Read and edit files, run tests and linters |
+| Workers 1 to 3 | Haiku | Each builds one task, in its own git worktree | Read and edit files, run tests and linters |
 | Reviewer | Sonnet | Checks all the workers' changes merged together | Read files, run tests, linters and `git diff` |
 
 Built with Rust and Tauri 2. The page is plain HTML, CSS and JavaScript shown in the
@@ -141,8 +141,8 @@ starts from; with it on, this project's own set, which overrides them.
 
 | Preset | Dispatcher | Planner | Workers | Reviewer | Cap per session |
 |---|---|---|---|---|---|
-| Lean | Haiku | Sonnet, medium effort | Sonnet, low | Sonnet, low | 3 dollars |
-| Balanced (the default) | Haiku | Opus, medium | Sonnet, medium | Sonnet, medium | 5 dollars |
+| Lean | Haiku | Sonnet, medium effort | Haiku | Sonnet, low | 3 dollars |
+| Balanced (the default) | Haiku | Opus, medium | Haiku | Sonnet, medium | 5 dollars |
 | Thorough | Haiku | Opus, high | Sonnet, high | Opus, medium | 10 dollars |
 
 You can then change any of them. For each role you set:

@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn worker_can_edit_and_only_run_listed_commands() {
         let args = build_args(&config::worker(&Settings::default(), 1), Some("abc-123"), None);
-        assert_eq!(value_after(&args, "--model"), "sonnet");
+        assert_eq!(value_after(&args, "--model"), "haiku");
         assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write,Bash,Skill");
         let allowed = value_after(&args, "--allowedTools");
         assert!(allowed.contains("Edit") && allowed.contains("Bash(cargo test *)"));

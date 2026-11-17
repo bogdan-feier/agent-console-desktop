@@ -43,7 +43,10 @@ pub const AUTH: AuthMode = AuthMode::ClaudeLogin;
 
 pub const DISPATCHER_MODEL: &str = "haiku";
 pub const PLANNER_MODEL: &str = "opus";
-pub const WORKER_MODEL: &str = "sonnet";
+// Workers run on Haiku in the Lean and Balanced presets. In a full glovebox round with the
+// same plan, Haiku workers cost $0.013 against Sonnet's $0.198, and both rounds passed the
+// checks and the review. The plan, the check command and the reviewer carry the judgment.
+pub const WORKER_MODEL: &str = "haiku";
 pub const REVIEWER_MODEL: &str = "sonnet";
 
 /// Most workers a plan can ever use (the Settings window can lower it). The planner
@@ -766,7 +769,7 @@ mod tests {
         assert_eq!(dispatcher(&settings).model, "haiku");
         assert_eq!(planner(&settings).model, "opus");
         assert_eq!(planner(&settings).effort, Some(Effort::Max));
-        assert_eq!(worker(&settings, 3).model, "sonnet");
+        assert_eq!(worker(&settings, 3).model, "haiku");
         assert_eq!(reviewer(&settings).model, "haiku");
     }
 

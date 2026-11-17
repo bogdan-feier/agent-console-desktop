@@ -180,14 +180,16 @@ impl Settings {
         let (planner, worker, reviewer, budget) = match preset {
             Preset::Lean => (
                 RoleSettings::new("sonnet", Some(Medium)),
-                RoleSettings::new("sonnet", Some(Low)),
+                // Effort left unset on Haiku workers: Haiku 5.5 defaults to medium, and
+                // older Haiku versions take no effort level at all.
+                RoleSettings::new(WORKER_MODEL, None),
                 // One reviewer checks every task together, so it stays on Sonnet.
                 RoleSettings::new("sonnet", Some(Low)),
                 Some(3.0),
             ),
             Preset::Balanced => (
                 RoleSettings::new(PLANNER_MODEL, Some(Medium)),
-                RoleSettings::new(WORKER_MODEL, Some(Medium)),
+                RoleSettings::new(WORKER_MODEL, None),
                 RoleSettings::new(REVIEWER_MODEL, Some(Medium)),
                 MAX_BUDGET_USD_PER_AGENT,
             ),
@@ -557,7 +559,9 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings, Settings::preset(Preset::Balanced));
         assert_eq!(settings.planner.model, "opus");
-        assert_eq!(settings.worker.model, "sonnet");
+        assert_eq!(settings.worker.model, "haiku");
+        assert_eq!(Settings::preset(Preset::Lean).worker.model, "haiku");
+        assert_eq!(Settings::preset(Preset::Thorough).worker.model, "sonnet");
         assert_eq!(settings.dispatcher.model, "haiku");
         assert_eq!(settings.reviewer.effort, Some(Effort::Medium));
         assert!(!settings.use_mcp_servers);

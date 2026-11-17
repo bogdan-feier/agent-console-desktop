@@ -114,7 +114,7 @@ async fn the_prompt_goes_to_stdin_and_the_process_runs_in_the_project() {
     // The log files were written relative to the process's working directory.
     assert_eq!(read(&project, "fake-prompt.txt"), prompt);
     let args = read(&project, "fake-args.txt");
-    for expected in ["-p", "stream-json", "--verbose", "dontAsk", "sonnet", "--resume=sess-0"] {
+    for expected in ["-p", "stream-json", "--verbose", "dontAsk", "haiku", "--resume=sess-0"] {
         assert!(args.lines().any(|arg| arg == expected), "missing {expected} in {args}");
     }
 }

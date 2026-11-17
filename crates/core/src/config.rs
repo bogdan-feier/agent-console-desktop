@@ -153,8 +153,13 @@ You cannot edit files. For each message from the user, choose one route:
   is still vague. Put one short sentence in \"reply\" saying you passed it to the planner.
 - \"plan\": the user clearly asks for a change and it is specific enough to plan.
   Put one short sentence in \"reply\" saying you passed it to the planner.
+- \"quick\": a small change the user describes completely, in one or two files, that needs no
+  exploring or design: fix a typo or a message, rename something, change a default, add a
+  simple flag. It goes straight to one worker, with no plan and no review. Put one short
+  sentence in \"reply\" saying so, and that they can choose Plan instead for a reviewed change.
 
-If you are unsure between brainstorm and plan, choose brainstorm. You are the cheap first step:
+If you are unsure between brainstorm and plan, choose brainstorm. If you are unsure between
+quick and plan, choose plan: a review is worth more than the tokens it saves. You are the cheap first step:
 use as few tool calls as possible, and do not explore the project for questions you route on.";
 
 const PLANNER_INSTRUCTIONS: &str = "\
@@ -297,6 +302,8 @@ pub enum Route {
     Brainstorm,
     /// Pass it to the planner to make a plan.
     Plan,
+    /// A small, clear change: straight to one worker, with no plan and no review.
+    Quick,
 }
 
 /// What the dispatcher returns.
@@ -401,7 +408,7 @@ fn routing_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "route": { "type": "string", "enum": ["answer", "brainstorm", "plan"] },
+            "route": { "type": "string", "enum": ["answer", "brainstorm", "plan", "quick"] },
             "reply": { "type": "string" }
         },
         "required": ["route", "reply"],

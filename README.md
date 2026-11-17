@@ -3,7 +3,8 @@
 A macOS desktop app that runs a small team of Claude agents on one project.
 
 ```text
-you -> dispatcher -> answers quick questions itself, or passes your message to the planner
+you -> dispatcher -> answers quick questions itself, sends small clear fixes to one worker,
+                     or passes your message to the planner
        planner -> talks ideas through with you, then makes a plan -> you approve
        workers -> up to 3 at the same time, each in its own copy of the project
        reviewer -> checks all their work together -> you apply it, or discard it
@@ -69,8 +70,10 @@ problem back), and one for the resolver that only appears when it is needed. The
 1. **Message the team.** Choose the project in the top left, type in the box at the bottom of
    the conversation and press **Send** (or Cmd+Enter). With **Ask** selected, the dispatcher
    answers quick questions itself ("what does this function do?"). Ideas go to the planner to
-   talk through; clear requests go to the planner to plan. Select **Brainstorm** or **Plan** to
-   skip the dispatcher.
+   talk through; clear requests go to the planner to plan. A small change you describe
+   completely (a typo, a renamed option, a new default) goes straight to one worker as a
+   quick change, with no plan and no review; when in doubt it plans instead. Select
+   **Brainstorm**, **Plan** or **Quick** to skip the dispatcher.
 2. **Brainstorm (optional).** Keep talking to the planner with **Brainstorm** selected.
    Nothing is edited.
 3. **Plan.** Select **Plan** and send (typing something is optional). The planner turns the
@@ -251,7 +254,8 @@ that.
 - **Try the Lean preset** for routine work, and Thorough only when quality matters most.
 - **Keep brainstorms short.** Each message resends the conversation so far (mostly from
   cache, but it grows). When you know what you want, send Plan.
-- **Plan straight away** for small, clear changes: it skips the dispatcher and the brainstorm.
+- **Quick for small, clear changes:** one worker and no review, about a quarter of a full
+  round. Ask sends the obvious ones there by itself; choose Quick to make sure.
 - **Keep the target project's `CLAUDE.md` short.** Every agent reads it at the start.
 - **Ask for one thing per round.** Two unrelated requests in one round cost more than two
   small rounds, because every agent carries both in its context.

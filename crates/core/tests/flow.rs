@@ -77,6 +77,27 @@ async fn dispatcher_passes_clear_requests_on_to_be_planned() {
 }
 
 #[tokio::test]
+async fn dispatcher_sends_small_clear_changes_straight_to_a_worker() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+    let orchestrator = instant_script();
+
+    supervised(run.clone(), orchestrator.ask(&run, "Fix the typo in the greeting")).await;
+    assert_eq!(collected.statuses("worker-1"), ["running", "done"]);
+    assert!(collected.statuses("planner").is_empty(), "no plan for a quick change");
+    assert!(run.review().is_none(), "and no review");
+
+    // With that round still open, another quick change cannot open one, so it is planned.
+    supervised(run.clone(), orchestrator.ask(&run, "Fix another typo")).await;
+    assert_eq!(collected.statuses("planner"), ["running", "done"]);
+    assert_eq!(run.state(), RunState::AwaitingApproval);
+    let notices = collected.of_type("notice");
+    assert!(notices
+        .iter()
+        .any(|notice| notice["text"].as_str().unwrap().contains("planning this one instead")));
+}
+
+#[tokio::test]
 async fn a_quick_change_runs_one_worker_and_nobody_else() {
     let collected = Collected::default();
     let run = new_run(".", &collected);

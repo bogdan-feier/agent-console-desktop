@@ -96,6 +96,16 @@ impl Orchestrator {
             Route::Answer => Ok(()),
             Route::Brainstorm => self.chat(run, PLANNER_ID, message).await,
             Route::Plan => self.plan(run, Some(message)).await,
+            // A quick change opens a round of its own, and only one can be open. Planning
+            // does not need one, so the request still goes somewhere useful.
+            Route::Quick if run.has_open_round() => {
+                let text = "A quick change needs the open round to be applied or discarded first, so \
+                            the planner is planning this one instead."
+                    .to_string();
+                run.emit(None, EventKind::Notice { text });
+                self.plan(run, Some(message)).await
+            }
+            Route::Quick => self.quick(run, message).await,
         }
     }
 

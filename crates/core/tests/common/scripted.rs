@@ -83,6 +83,8 @@ impl ScriptedRunner {
                           `most_common_words`. They all split text with the same `_words` helper. \
                           Tests are in `tests/test_stats.py`; run them with `uv run pytest`."
             })
+        } else if lower.contains("typo") {
+            json!({ "route": "quick", "reply": "A small, clear fix, so one worker does it straight away." })
         } else if has_word(BUILD_WORDS) {
             json!({ "route": "plan", "reply": "That is a clear change, so I passed it to the planner to plan." })
         } else {

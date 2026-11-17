@@ -173,9 +173,10 @@ Rules for the plan:
   test is ONE task. Splitting work a single worker would do in one pass costs a whole
   extra agent, and every agent pays for its own system prompt before it does anything.
   If you are unsure whether to split, do not.
-- Never plan a task that changes dependencies or lock files (pyproject.toml, package.json,
-  Cargo.toml, uv.lock and the like). Those belong to the user, between rounds. Say so in
-  your summary instead, so they can do it.
+- A task may add, remove or update dependencies when the request needs it. Give every
+  dependency change to ONE task, because two lock files cannot be merged, and name the
+  project's own command in its instructions (uv add, npm install, cargo add), so the lock
+  file is updated with it.
 - Each worker gets its own copy of the project (a git worktree) and their work is merged
   afterwards, so two tasks must never change the same file: that makes the merge fail.
 - Each task goes to a worker that has not seen this conversation. Write instructions that
@@ -202,11 +203,15 @@ your own copy of the project. Other workers do other tasks in their own copies a
 and all the work is merged afterwards.
 
 Rules:
-- Create or edit ONLY the files listed for your task; anything else may clash in the merge.
+- Work in the files listed for your task. If the task needs another file (a .gitignore, a
+  config, a file to delete or rename), change it too, and name it in your report: another
+  worker may be changing it, so keep such changes small.
 - Add or update tests for the behaviour you change.
 - Run only your own test file while you work, not the whole suite.
-- Do not commit, push, or add dependencies. The app commits your work when you finish.
-- If the task is unclear or needs a file that is not on your list, stop and say so.
+- Do not commit or push. The app commits your work when you finish.
+- Add or update a dependency only when your task says to, with the project's own command
+  (uv add, npm install, cargo add), so its lock file is updated too.
+- If the task is unclear, stop and say so.
 
 Work economically: find things with Grep and Glob before reading, read only the parts of
 files you need, and do not re-read files you have already seen in this session.
@@ -283,7 +288,8 @@ const WORKER_CHAT_INSTRUCTIONS: &str = "\
 You are a worker in a small team and you already worked on a task in this session, in your own
 copy of the project. The user is now talking to you directly. Answer their questions, or make
 the changes they ask for. Stay within the files of your task unless the user names other files.
-Do not commit, push, or add dependencies. If you change code, run the relevant tests and say
+Do not commit or push. Add a dependency only when the user asks, with the project's own
+command, so its lock file is updated too. If you change code, run the relevant tests and say
 briefly what you changed. Reuse what you already know from this session instead of reading
 files again.";
 

@@ -284,12 +284,7 @@ impl Orchestrator {
             return Ok(());
         }
         if let Some(settled) = self.settle(run, &finished, None, WORKER_ONE).await {
-            let text = match settled.checked.as_ref().map(|checked| checked.passed) {
-                Some(false) => "Done, but the project's checks did not pass. Nothing was \
-                                reviewed: look at the changes before you apply them."
-                    .to_string(),
-                _ => "Done. Nobody reviewed this, so look at the changes before you apply them.".to_string(),
-            };
+            let text = quick_notice(settled.checked.as_ref().map(|checked| checked.passed)).to_string();
             run.emit(None, EventKind::Notice { text });
             run.set_state(RunState::Done);
         }
@@ -813,6 +808,28 @@ fn clash_message(worker: usize, files: &[String], why: &str) -> String {
 }
 
 /// The check output, for the end of the reviewer's prompt.
+/// What a finished quick change says, from whether the project's checks passed
+/// (`None`: no check command is set). A quick change has no reviewer, and its worker
+/// only runs its own tests, so without a check command nothing has run the whole
+/// suite: a change that breaks an older test elsewhere would go unnoticed.
+fn quick_notice(checks_passed: Option<bool>) -> &'static str {
+    match checks_passed {
+        Some(false) => {
+            "Done, but the project's checks did not pass. Nothing was reviewed: look at the \
+             changes before you apply them."
+        }
+        Some(true) => {
+            "Done, and the project's checks passed. Nobody reviewed this, so look at the changes \
+                       before you apply them."
+        }
+        None => {
+            "Done. Nobody reviewed this, and no check command is set, so the whole test suite has not run \
+             on it either. Look at the changes before you apply them, and set a check command in Settings \
+             to have the tests run after every change."
+        }
+    }
+}
+
 fn checks_text(checked: Option<&Checked>) -> String {
     let Some(checked) = checked else { return String::new() };
     let verdict = if checked.passed { "passed" } else { "FAILED" };
@@ -871,6 +888,13 @@ fn first_line(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quick_change_without_a_check_command_says_the_tests_did_not_run() {
+        assert!(quick_notice(None).contains("no check command is set"));
+        assert!(quick_notice(Some(true)).contains("checks passed"));
+        assert!(quick_notice(Some(false)).contains("did not pass"));
+    }
 
     #[test]
     fn a_worker_is_told_what_the_planner_already_read() {

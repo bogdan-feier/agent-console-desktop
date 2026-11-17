@@ -26,6 +26,13 @@ export const app = {
   taskTitles: [], // true while an older run's events are being shown again
   cost: 0,          // API-equivalent dollars the agents of this run have used
   tokens: 0,        // tokens the agents of this run have used, all kinds together
+  /// The same two for the current round: everything since the last round closed, so
+  /// the planning that led to a round counts towards it.
+  roundCost: 0,
+  roundTokens: 0,
+  /// Set when a round closes. The round's numbers stay on screen until the next
+  /// agent starts using tokens, then count from zero.
+  roundClosed: false,
 };
 
 /// agent id -> { id, role, label, number, card?, turn?, lastTurn?, hasWorked }

@@ -129,8 +129,15 @@ export function showUsage(agent, event) {
     "Dollars are API prices.";
   addToTurn(agent, node);
 
+  if (app.roundClosed) {
+    app.roundCost = 0;
+    app.roundTokens = 0;
+    app.roundClosed = false;
+  }
   app.tokens += total;
   app.cost += event.cost_usd || 0;
+  app.roundTokens += total;
+  app.roundCost += event.cost_usd || 0;
   showRunTotal();
 }
 
@@ -140,6 +147,13 @@ export function showRunTotal() {
   usage.textContent = "This run: " + count(app.tokens) + " tokens" + (app.cost > 0 ? ", $" + app.cost.toFixed(2) : "");
   usage.title =
     "API-equivalent cost. On a Claude plan login this is a measure of how much of your limits the run used.";
+  // Only worth a second number once the run has more than one round in it. Dollars
+  // alone keep the bar short; the tokens are in the tooltip.
+  if (app.roundTokens > 0 && app.roundTokens < app.tokens) {
+    usage.textContent += " · this round: " + (app.roundCost > 0 ? "$" + app.roundCost.toFixed(2) : count(app.roundTokens) + " tokens");
+    usage.title += " This round: " + count(app.roundTokens) + " tokens, counted from the end of the previous " +
+      "round, so the planning that led to it is included.";
+  }
 }
 
 /// Forget every turn in progress (a new round, or a different run).

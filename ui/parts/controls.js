@@ -65,6 +65,7 @@ export function setRound(open, quick = false, tasks = []) {
   } else {
     // The workers' and reviewer's sessions ended with the round.
     for (const agent of Object.values(agents)) if (agent.card) agent.hasWorked = false;
+    app.roundClosed = true;
     for (const old of document.querySelectorAll(".decision.review button")) old.remove();
     // Nothing is waiting on that round any more, so neither is any plan.
     for (const hint of thread().querySelectorAll(".round-wait")) hint.remove();

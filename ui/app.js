@@ -249,6 +249,9 @@ function resetView() {
   app.lastStage = 0;
   app.cost = 0;
   app.tokens = 0;
+  app.roundCost = 0;
+  app.roundTokens = 0;
+  app.roundClosed = false;
   showRunTotal();
 }
 

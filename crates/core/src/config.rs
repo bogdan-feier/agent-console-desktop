@@ -217,6 +217,12 @@ Verdict \"approve\" only if there is nothing that must be fixed. Put each requir
 \"must_fix\" with the number of the task whose worker should fix it, and the problem as
 \"path/to/file:line - what is wrong\". Optional ideas go in \"consider\".
 
+Each entry in \"must_fix\" needs the number of the task whose worker will fix it, and that
+worker may only edit the files listed for its own task. If what has to change is in a file
+no task lists, no worker can do it: set \"task\" to 0 and say in the issue which file and
+what to change, and the user will do it themselves. Never give a finding to a task whose
+file list does not cover it; that worker will refuse it and the round gets stuck.
+
 In \"commit_message\", write the subject line for a commit of all this work: one line, at
 most 72 characters, imperative mood, describing what the change does rather than listing
 the tasks. Match the style of the project's recent commit subjects, shown in the prompt:
@@ -332,6 +338,10 @@ pub enum Verdict {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     /// Task number, counting from 1, which is also the worker's number.
+    ///
+    /// `0` means no task owns the file this is about, so no worker is allowed to
+    /// touch it and sending it back to one would only get it refused. Those are the
+    /// user's to fix. See [`Review::for_the_user`].
     pub task: usize,
     pub issue: String,
 }
@@ -356,6 +366,11 @@ impl Review {
     /// The problems worker `number` should fix.
     pub fn findings_for(&self, number: usize) -> Vec<&Finding> {
         self.must_fix.iter().filter(|finding| finding.task == number).collect()
+    }
+
+    /// Findings no worker is allowed to fix, because the file belongs to no task.
+    pub fn for_the_user(&self) -> Vec<&Finding> {
+        self.findings_for(0)
     }
 }
 
@@ -408,7 +423,7 @@ fn review_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "task": { "type": "integer", "minimum": 1, "maximum": WORKER_COUNT },
+                        "task": { "type": "integer", "minimum": 0, "maximum": WORKER_COUNT },
                         "issue": { "type": "string" }
                     },
                     "required": ["task", "issue"],
@@ -882,5 +897,36 @@ mod tests {
             assert!(!spec.tools.contains(&"Bash".to_string()), "{}", spec.id);
             assert!(spec.denied.is_empty(), "{}", spec.id);
         }
+    }
+
+    #[test]
+    fn a_finding_in_nobody_s_files_is_kept_apart_from_the_workers() {
+        let review = Review {
+            verdict: Verdict::NeedsChanges,
+            summary: "ruff fails on a file neither task owns.".to_string(),
+            must_fix: vec![
+                Finding { task: 1, issue: "tests/test_rules.py:4 - wrong assertion".to_string() },
+                Finding { task: 0, issue: "src/glovebox/rules/__init__.py:13 - ruff PLW1508".to_string() },
+            ],
+            consider: vec![],
+            commit_message: "fix the tests".to_string(),
+        };
+
+        assert_eq!(review.findings_for(1).len(), 1);
+        assert_eq!(review.for_the_user().len(), 1);
+        // Nothing meant for the user is ever handed to a worker.
+        for worker in 1..=WORKER_COUNT {
+            assert!(
+                review.findings_for(worker).iter().all(|finding| finding.task != 0),
+                "worker {worker} was given the user's finding"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reviewer_may_say_a_finding_belongs_to_no_task() {
+        let schema = review_schema();
+        let task = &schema["properties"]["must_fix"]["items"]["properties"]["task"];
+        assert_eq!(task["minimum"], 0, "0 is how it says nobody may fix this");
     }
 }

@@ -620,6 +620,12 @@ pub fn can_finish_round(run: &Run) -> Result<(), String> {
 /// May the user send the reviewer's findings back to worker `number` now?
 pub fn can_send_back(run: &Run, number: usize) -> Result<(), String> {
     can_finish_round(run)?;
+    // Task 0 is the reviewer saying no worker may touch that file.
+    if number == 0 {
+        return Err("Those findings are in files no task was allowed to change, so no worker \
+                    can fix them. They are yours to do."
+            .to_string());
+    }
     let has_findings = run.review().is_some_and(|review| !review.findings_for(number).is_empty());
     if !has_findings {
         return Err(format!("The review has nothing for worker {number} to fix."));

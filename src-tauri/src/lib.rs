@@ -589,8 +589,36 @@ fn stop_run(state: State<'_, AppState>, run_id: String) -> CommandResult<()> {
 
 /// Keep only the first line, and not too much of it: a commit message's first
 /// line is its subject.
+/// A commit subject from the first line of `text`, at most 72 characters.
+///
+/// Cut on a boundary a person would cut on, never mid-word: this is sometimes the
+/// user's own request, which is a sentence rather than a subject line, and
+/// `SERVICE_WARN_KM is hardcoded to 8000 in rules. Read it from a GLOVEBOX_S` is
+/// not something to offer anybody as a commit message. A full stop inside the limit
+/// ends it, without its full stop, because a commit subject does not take one;
+/// otherwise the last whole word does, with an ellipsis to show there was more.
+/// The field is editable either way.
 fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().chars().take(72).collect::<String>().trim().to_string()
+    const LIMIT: usize = 72;
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= LIMIT {
+        return line.to_string();
+    }
+    let room: String = line.chars().take(LIMIT).collect();
+
+    // A sentence that ends inside the limit is the natural subject.
+    if let Some(stop) = room.rfind(". ").or_else(|| room.strip_suffix('.').map(str::len)) {
+        let sentence = room[..stop].trim_end();
+        if sentence.chars().count() >= LIMIT / 3 {
+            return sentence.to_string();
+        }
+    }
+    // Otherwise the last whole word, leaving room for the ellipsis.
+    let room: String = line.chars().take(LIMIT - 1).collect();
+    match room.rsplit_once(char::is_whitespace) {
+        Some((whole, _)) if !whole.trim().is_empty() => format!("{}…", whole.trim_end()),
+        _ => room.trim_end().to_string(),
+    }
 }
 
 /// Forward every event of a run to the window, and save it when there is a store.
@@ -681,6 +709,35 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_commit_subject_is_never_cut_mid_word() {
+        // The real one, from a quick change with no reviewer to write a message.
+        let asked = "SERVICE_WARN_KM is hardcoded to 8000 in rules. Read it from a \
+                     GLOVEBOX_SERVICE_WARN_KM environment variable instead, defaulting to 8000.";
+        let subject = first_line(asked);
+
+        // No trailing full stop: a commit subject does not take one.
+        assert_eq!(subject, "SERVICE_WARN_KM is hardcoded to 8000 in rules");
+        assert!(subject.chars().count() <= 72);
+    }
+
+    #[test]
+    fn a_long_first_sentence_keeps_its_last_whole_word() {
+        let asked = "Add a farewell helper to app.py and a matching test so that the module \
+                     keeps its coverage";
+        let subject = first_line(asked);
+
+        assert!(subject.chars().count() <= 72, "{subject}");
+        assert!(subject.ends_with('…'), "{subject}");
+        assert!(!subject.contains("cover"), "cut before the word, not inside it: {subject}");
+    }
+
+    #[test]
+    fn a_subject_that_already_fits_is_left_alone() {
+        assert_eq!(first_line("feat: add a --bye flag"), "feat: add a --bye flag");
+        assert_eq!(first_line("one line\nand another"), "one line");
+    }
 
     #[test]
     fn tilde_expands_to_the_home_folder() {

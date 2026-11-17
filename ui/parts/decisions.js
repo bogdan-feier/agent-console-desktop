@@ -127,16 +127,24 @@ function findings(mustFix) {
   const box = el("div", "findings");
   for (const task of [...new Set(mustFix.map((finding) => finding.task))].sort()) {
     const group = el("div", "finding-group");
-    group.append(el("div", "goes-to", "Must fix in task " + task));
+    // Task 0 is the reviewer saying the file belongs to no task, so no worker is
+    // allowed to change it. Offering "send back" there would only get it refused.
+    const mine = task === 0;
+    group.append(el("div", "goes-to", mine
+      ? "Yours to fix: no task covered these files"
+      : "Must fix in task " + task));
     const list = el("ul");
     for (const finding of mustFix.filter((one) => one.task === task)) list.append(rich("li", finding.issue));
+    group.append(list);
 
-    const sendBack = button("Send back to Worker " + task, () => {
-      clearProblem();
-      invoke("send_back", { runId: app.runId, worker: task }).catch(showProblem);
-    });
-    sendBack.dataset.needs = "round";
-    group.append(list, sendBack);
+    if (!mine) {
+      const sendBack = button("Send back to Worker " + task, () => {
+        clearProblem();
+        invoke("send_back", { runId: app.runId, worker: task }).catch(showProblem);
+      });
+      sendBack.dataset.needs = "round";
+      group.append(sendBack);
+    }
     box.append(group);
   }
   return box;

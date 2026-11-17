@@ -134,7 +134,8 @@ impl ScriptedRunner {
         report.to_string()
     }
 
-    /// The first review asks worker 2 for one fix; later reviews approve.
+    /// The first review asks worker 2 for one fix, and has one in a file no task listed;
+    /// later reviews approve.
     async fn review(&self, run: &Run, spec: &AgentSpec) -> Value {
         let first_review = run.review().is_none();
         self.tool(run, spec, "Read", "src/textstats/sentences.py").await;
@@ -144,7 +145,10 @@ impl ScriptedRunner {
             json!({
                 "verdict": "needs_changes",
                 "summary": "Tasks 1 and 3 are fine. Task 2 raises on empty input instead of returning 0.",
-                "must_fix": [{ "task": 2, "issue": "src/textstats/sentences.py:14 - empty string raises IndexError" }],
+                "must_fix": [
+                    { "task": 2, "issue": "src/textstats/sentences.py:14 - empty string raises IndexError" },
+                    { "task": 0, "issue": ".gitignore (missing) - add one containing __pycache__/" }
+                ],
                 "consider": ["Task 2: name the punctuation set as a constant."]
             })
         } else {

@@ -134,24 +134,23 @@ function findings(mustFix) {
   const box = el("div", "findings");
   for (const task of [...new Set(mustFix.map((finding) => finding.task))].sort()) {
     const group = el("div", "finding-group");
-    // Task 0 is the reviewer saying the file belongs to no task, so no worker is
-    // allowed to change it. Offering "send back" there would only get it refused.
-    const mine = task === 0;
-    group.append(el("div", "goes-to", mine
-      ? "Yours to fix: no task covered these files"
+    // Task 0 is the reviewer saying the file belongs to no task. The app gives those
+    // to the first worker that finished, which is then allowed to edit them.
+    const unassigned = task === 0;
+    group.append(el("div", "goes-to", unassigned
+      ? "No task covered these files"
       : "Must fix in task " + task));
     const list = el("ul");
     for (const finding of mustFix.filter((one) => one.task === task)) list.append(rich("li", finding.issue));
     group.append(list);
 
-    if (!mine) {
-      const sendBack = button("Send back to Worker " + task, () => {
-        clearProblem();
-        invoke("send_back", { runId: app.runId, worker: task }).catch(showProblem);
-      });
-      sendBack.dataset.needs = "round";
-      group.append(sendBack);
-    }
+    const sendBack = button(unassigned ? "Give these to a worker" : "Send back to Worker " + task, () => {
+      clearProblem();
+      invoke("send_back", { runId: app.runId, worker: task }).catch(showProblem);
+    });
+    if (unassigned) sendBack.title = "The first worker that finished fixes them, then the reviewer checks again";
+    sendBack.dataset.needs = "round";
+    group.append(sendBack);
     box.append(group);
   }
   return box;

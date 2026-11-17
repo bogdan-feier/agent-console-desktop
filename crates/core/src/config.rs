@@ -234,8 +234,8 @@ Verdict \"approve\" only if there is nothing that must be fixed. Put each requir
 
 Each entry in \"must_fix\" needs the number of the task whose worker will fix it, and that
 worker may only edit the files listed for its own task. If what has to change is in a file
-no task lists, no worker can do it: set \"task\" to 0 and say in the issue which file and
-what to change, and the user will do it themselves. Never give a finding to a task whose
+no task lists, set \"task\" to 0 and say in the issue which file and what to change: the
+user decides who fixes it, and may hand it to a worker. Never give a finding to a task whose
 file list does not cover it; that worker will refuse it and the round gets stuck.
 
 In \"commit_message\", write the subject line for a commit of all this work: one line, at

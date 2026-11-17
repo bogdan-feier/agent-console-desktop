@@ -145,6 +145,25 @@ async fn a_round_runs_three_workers_and_one_review() {
 }
 
 #[tokio::test]
+async fn findings_no_task_covered_can_be_given_to_a_worker() {
+    let collected = Collected::default();
+    let (run, orchestrator) = reviewed_run(&collected).await;
+    assert_eq!(run.review().unwrap().for_the_user().len(), 1);
+    assert!(can_send_back(&run, 0).is_ok(), "the findings for nobody can still be acted on");
+
+    supervised(run.clone(), orchestrator.send_back(&run, 0)).await;
+
+    // The first worker that finished took them, and the reviewer looked again.
+    assert_eq!(collected.statuses("worker-1"), ["running", "done", "running", "done"]);
+    assert_eq!(collected.statuses("worker-2"), ["running", "done"], "worker 2 keeps its own finding");
+    assert_eq!(collected.statuses("reviewer"), ["running", "done", "running", "done"]);
+    let notices = collected.of_type("notice");
+    assert!(notices
+        .iter()
+        .any(|n| n["agent"] == "worker-1" && n["text"].as_str().unwrap().contains("no task covered")));
+}
+
+#[tokio::test]
 async fn sending_work_back_resumes_that_worker_and_reviews_again() {
     let collected = Collected::default();
     let (run, orchestrator) = reviewed_run(&collected).await;

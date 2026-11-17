@@ -210,7 +210,7 @@ impl Orchestrator {
         // seconds apart and the later ones can reuse the earlier one's prompt cache.
         join_all((1..=count).map(|number| async move {
             self.start_after(number).await;
-            self.build_one(run, number, false).await
+            self.build_one(run, number, Job::Task).await
         }))
         .await;
 
@@ -310,7 +310,7 @@ impl Orchestrator {
         run.open_round(workspace, true);
 
         run.set_state(RunState::Building);
-        self.build_one(run, 1, false).await;
+        self.build_one(run, 1, Job::Task).await;
 
         let finished = run.finished_workers();
         if finished.is_empty() {
@@ -326,12 +326,19 @@ impl Orchestrator {
     }
 
     /// Give worker `number` the reviewer's findings for its task, then review again.
+    /// `number` 0 means the findings in files no task listed: they go to the first
+    /// worker that finished, which may then edit the files they name.
     /// Check [`can_send_back`] first.
     pub async fn send_back(&self, run: &Run, number: usize) -> Result<(), AgentError> {
+        let (worker, job, text) = if number == 0 {
+            let Some(worker) = unassigned_handler(run) else { return Ok(()) };
+            (worker, Job::FixUnassigned, "Given the findings no task covered, to fix in their files.")
+        } else {
+            (number, Job::FixOwn, "Sent back to fix what the reviewer found in this task.")
+        };
         run.set_state(RunState::Building);
-        let text = "Sent back to fix what the reviewer found in this task.".to_string();
-        run.emit(Some(&format!("worker-{number}")), EventKind::Notice { text });
-        if self.build_one(run, number, true).await {
+        run.emit(Some(&format!("worker-{worker}")), EventKind::Notice { text: text.to_string() });
+        if self.build_one(run, worker, job).await {
             return self.review(run).await;
         }
         run.set_state(RunState::Done);
@@ -541,11 +548,12 @@ impl Orchestrator {
 
     /// Run worker `number` on its task (or on the reviewer's findings, for a fix) and
     /// save what it changed. Returns false if the worker failed.
-    async fn build_one(&self, run: &Run, number: usize, is_fix: bool) -> bool {
+    async fn build_one(&self, run: &Run, number: usize, job: Job) -> bool {
         let Some(task) = run.task(number) else { return false };
         let spec = config::for_task(config::worker(&self.settings(), number), &task);
-        let (prompt, session) = match run.review() {
-            Some(review) if is_fix => (fix_prompt(&review, number), run.session(&spec.id)),
+        let (prompt, session) = match (run.review(), job) {
+            (Some(review), Job::FixOwn) => (fix_prompt(&review, number), run.session(&spec.id)),
+            (Some(review), Job::FixUnassigned) => (unassigned_fix_prompt(&review), run.session(&spec.id)),
             _ => (worker_prompt(&task, run.round_is_quick()), None),
         };
         match run_agent(self.runner.as_ref(), run, &spec, &prompt, session.as_deref()).await {
@@ -646,14 +654,20 @@ pub fn can_finish_round(run: &Run) -> Result<(), String> {
     Ok(())
 }
 
-/// May the user send the reviewer's findings back to worker `number` now?
+/// May the user send the reviewer's findings back to worker `number` now? `number` 0
+/// is the findings no task covered (see [`Orchestrator::send_back`]).
 pub fn can_send_back(run: &Run, number: usize) -> Result<(), String> {
     can_finish_round(run)?;
-    // Task 0 is the reviewer saying no worker may touch that file.
     if number == 0 {
-        return Err("Those findings are in files no task was allowed to change, so no worker \
-                    can fix them. They are yours to do."
-            .to_string());
+        if !run.review().is_some_and(|review| !review.for_the_user().is_empty()) {
+            return Err("The review has nothing outside the tasks' files to fix.".to_string());
+        }
+        if unassigned_handler(run).is_none() {
+            return Err("No worker finished its task in this round, so there is nobody to give \
+                        these to. They are yours to do."
+                .to_string());
+        }
+        return Ok(());
     }
     let has_findings = run.review().is_some_and(|review| !review.findings_for(number).is_empty());
     if !has_findings {
@@ -886,6 +900,40 @@ fn fix_prompt(review: &Review, number: usize) -> String {
     format!(
         "{FIX_PROMPT_MARKER} Fix these and nothing else, then report what you changed.\n\n\
          Reviewer summary: {}\n\nMust fix in your task:\n{findings}",
+        review.summary
+    )
+}
+
+/// What a worker is asked to do in [`Orchestrator::build_one`].
+#[derive(Clone, Copy, PartialEq)]
+enum Job {
+    /// Its task from the plan (or the quick change).
+    Task,
+    /// The reviewer's findings for its own task.
+    FixOwn,
+    /// The findings no task covered, in files outside its own list.
+    FixUnassigned,
+}
+
+/// The worker that gets the findings no task covered: the first one that finished,
+/// because it has a session to continue and already knows the project.
+fn unassigned_handler(run: &Run) -> Option<usize> {
+    run.finished_workers().into_iter().find(|number| run.session(&format!("worker-{number}")).is_some())
+}
+
+/// The fix prompt for findings in files no task listed. A worker is told to stop at a
+/// file outside its list, so this says plainly that these files are allowed.
+fn unassigned_fix_prompt(review: &Review) -> String {
+    let findings = review
+        .for_the_user()
+        .iter()
+        .map(|finding| format!("- {}", finding.issue))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{FIX_PROMPT_MARKER} The reviewer found these in files that no task listed. You may create or \
+         edit the files they name, and only those. Fix these and nothing else, then report what you \
+         changed.\n\nReviewer summary: {}\n\nMust fix:\n{findings}",
         review.summary
     )
 }

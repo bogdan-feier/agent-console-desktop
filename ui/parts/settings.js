@@ -119,6 +119,7 @@ function fillSettingsForm(values) {
   $("use-mcp").checked = values.use_mcp_servers;
   $("worker-plugins").value = values.worker_plugins.join("\n");
   $("resolve-conflicts").checked = values.resolve_conflicts;
+  $("skip-review").checked = values.skip_review_when_checks_pass;
   $("worker-count").value = String(values.worker_count);
   $("check-command").value = values.check_command;
   $("notes").value = values.notes;
@@ -144,6 +145,7 @@ function readSettingsForm() {
   values.web_access = $("web-access").checked;
   values.full_shell = $("full-shell").checked;
   values.resolve_conflicts = $("resolve-conflicts").checked;
+  values.skip_review_when_checks_pass = $("skip-review").checked;
   // The Rust side trims each line and drops the empty ones and the repeats.
   values.allowed_commands = $("commands").value.split("\n");
   values.worker_count = Number($("worker-count").value);

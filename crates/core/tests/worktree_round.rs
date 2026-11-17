@@ -340,6 +340,48 @@ async fn the_apps_own_check_runs_on_the_merged_work_and_the_reviewer_is_told() {
 }
 
 #[tokio::test]
+async fn passing_checks_can_skip_the_review_and_review_again_still_reviews() {
+    let reviews = |runner: &WritingRunner| {
+        runner.sessions.lock().unwrap().iter().filter(|(id, _, _)| id == "reviewer").count()
+    };
+    let round = |check: &str| {
+        let settings = Settings {
+            check_command: check.into(),
+            skip_review_when_checks_pass: true,
+            ..Settings::default()
+        };
+        let runner = Arc::new(WritingRunner::default());
+        (runner.clone(), Orchestrator::new(runner, settings::shared(settings), Isolation::Worktrees))
+    };
+
+    // The checks pass: no reviewer, and the round says so.
+    let passing = project();
+    let (runner, orchestrator) = round("true");
+    let collected = Collected::default();
+    let run = new_run(passing.path(), &collected);
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    assert_eq!(reviews(&runner), 0);
+    assert_eq!(run.state(), RunState::Done);
+    assert!(collected
+        .of_type("notice")
+        .iter()
+        .any(|n| n["text"].as_str().unwrap().contains("review was skipped")));
+
+    // "Review again" is the user asking for one, setting or not.
+    supervised(run.clone(), orchestrator.review(&run)).await;
+    assert_eq!(reviews(&runner), 1);
+
+    // The checks fail: the reviewer looks, whatever the setting says.
+    let failing = project();
+    let (runner, orchestrator) = round("false");
+    let run = new_run(failing.path(), &Collected::default());
+    supervised(run.clone(), orchestrator.plan(&run, None)).await;
+    supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
+    assert_eq!(reviews(&runner), 1);
+}
+
+#[tokio::test]
 async fn a_round_can_be_picked_up_after_the_app_is_restarted() {
     let project = project();
     let runner = Arc::new(WritingRunner::default());

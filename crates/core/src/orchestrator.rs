@@ -214,12 +214,20 @@ impl Orchestrator {
         }))
         .await;
 
-        self.review(run).await
+        // Only here may Settings skip the review: "Review again" and a send-back are
+        // the user asking for one.
+        self.review_round(run, true).await
     }
 
     /// Merge every finished worker's changes and let the reviewer check them all
     /// together. Also used for "Review again" after you talked to a worker.
     pub async fn review(&self, run: &Run) -> Result<(), AgentError> {
+        self.review_round(run, false).await
+    }
+
+    /// [`Self::review`], which may end without the reviewer when `may_skip` and
+    /// Settings says to skip the review once the checks pass.
+    async fn review_round(&self, run: &Run, may_skip: bool) -> Result<(), AgentError> {
         run.set_state(RunState::Reviewing);
         let finished = run.finished_workers();
         if finished.is_empty() {
@@ -237,6 +245,15 @@ impl Orchestrator {
             return Ok(());
         };
         let Settled { changes, commit: reviewed_commit, checked } = settled;
+        let checks_passed = checked.as_ref().is_some_and(|checked| checked.passed);
+        if may_skip && checks_passed && self.settings().skip_review_when_checks_pass {
+            let text = "The project's checks passed, so the review was skipped, as Settings asks. Look at \
+                        the changes before you apply them, or press Review again to have them reviewed."
+                .to_string();
+            run.emit(Some(REVIEWER_ID), EventKind::Notice { text });
+            run.set_state(RunState::Done);
+            return Ok(());
+        }
 
         let spec = config::reviewer(&self.settings());
         let reports = reports_text(run, &finished);

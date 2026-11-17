@@ -194,6 +194,10 @@
         <label for="check-command">Command to run on the merged changes, before the reviewer sees them</label>
         <input type="text" id="check-command" spellcheck="false" placeholder="cargo test">
         <p class="hint">The app runs this itself, so it costs nothing, and gives the output to the reviewer. Leave it empty to skip it.</p>
+        <label class="switch">
+          <input type="checkbox" id="skip-review">
+          <span>Skip the review when this command passes <span class="hint">(saves the reviewer on rounds you trust to the tests; it no longer catches a change that passes them but does the wrong thing. Review again still works)</span></span>
+        </label>
       </section>
 
       <section class="settings-section" aria-labelledby="notifications-title">

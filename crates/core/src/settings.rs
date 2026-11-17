@@ -149,6 +149,11 @@ pub struct Settings {
     /// them, such as `cargo test`. Its output goes into the reviewer's prompt, which
     /// costs no turns. Empty means no check.
     pub check_command: String,
+    /// End a round without the reviewer when the check command passed. Off by
+    /// default: the reviewer is what catches a change that passes the tests but does
+    /// the wrong thing. On, it saves the reviewer's session on rounds you trust to the
+    /// tests, and "Review again" still calls it in.
+    pub skip_review_when_checks_pass: bool,
 
     /// True when these are one project's own settings rather than the general ones.
     /// Set when they are handed to the window; never read back from it or saved.
@@ -216,6 +221,7 @@ impl Settings {
             notes: String::new(),
             resolve_conflicts: true,
             check_command: String::new(),
+            skip_review_when_checks_pass: false,
             own: false,
         }
     }

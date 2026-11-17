@@ -89,6 +89,8 @@ problem back), and one for the resolver that only appears when it is needed. The
      cannot, the merge is undone and you are told which files clashed; nothing is lost.
    - If you set a **check command** in Settings, the app runs it on the merged result and
      gives the output to the reviewer. That costs no tokens and saves the reviewer the turns.
+     With **Skip the review when this command passes** on (off by default), a round whose
+     checks pass ends there, and **Review again** still calls the reviewer in.
 6. **Fix (optional).** "Send back to Worker N" gives that worker the problems in its task;
    the reviewer then checks again, looking only at what changed. The review itself is on
    the reviewer's card. You can also message any worker directly, then press **Review again**.

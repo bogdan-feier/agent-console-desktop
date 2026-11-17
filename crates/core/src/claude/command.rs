@@ -27,17 +27,25 @@ const DENIED: &str = "--disallowedTools";
 
 /// How long Claude Code keeps this session's prompt in the cache. Writing to the
 /// one-hour cache costs twice the input price, the five-minute one 1.25 times.
-pub const CACHE_TTL_VARIABLE: &str = "CLAUDE_CODE_PROMPT_CACHE_TTL";
+const CACHE_TTL_VARIABLE: &str = "CLAUDE_CODE_PROMPT_CACHE_TTL";
+/// Leaves out Claude Code's instructions for commits and pull requests, and the git
+/// status it shows at the start: about 700 tokens on every turn.
+const NO_GIT_INSTRUCTIONS: &str = "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS";
 
-/// The cache lifetime for an agent, or `None` for Claude Code's default (one hour on a
-/// subscription). Workers, the reviewer and the resolver work in one burst with seconds
-/// between turns, so the hour is paid for and never used. The dispatcher and the
-/// planner keep it: you come back to them after reading a plan or a review, often more
-/// than five minutes later.
-pub fn cache_ttl(role: Role) -> Option<&'static str> {
+/// Environment variables to start an agent's `claude` with, on top of the app's own.
+///
+/// Workers, the reviewer and the resolver get the five-minute cache: they work in one
+/// burst with seconds between turns, so the default hour is paid for and never used. The
+/// dispatcher and the planner keep it: you come back to them after reading a plan or a
+/// review, often more than five minutes later.
+///
+/// Workers also go without git instructions: they never commit (the app does), and the
+/// reviewer keeps them because it writes the commit message.
+pub fn environment(role: Role) -> Vec<(&'static str, &'static str)> {
     match role {
-        Role::Worker | Role::Reviewer | Role::Resolver => Some("5m"),
-        Role::Dispatcher | Role::Planner => None,
+        Role::Worker => vec![(CACHE_TTL_VARIABLE, "5m"), (NO_GIT_INSTRUCTIONS, "1")],
+        Role::Reviewer | Role::Resolver => vec![(CACHE_TTL_VARIABLE, "5m")],
+        Role::Dispatcher | Role::Planner => Vec::new(),
     }
 }
 
@@ -236,11 +244,27 @@ mod tests {
     #[test]
     fn only_the_agents_you_come_back_to_keep_the_hour_long_cache() {
         let settings = Settings::default();
-        assert_eq!(cache_ttl(config::worker(&settings, 1).role), Some("5m"));
-        assert_eq!(cache_ttl(config::reviewer(&settings).role), Some("5m"));
-        assert_eq!(cache_ttl(config::resolver(&settings).role), Some("5m"));
-        assert_eq!(cache_ttl(config::planner(&settings).role), None);
-        assert_eq!(cache_ttl(config::dispatcher(&settings).role), None);
+        let ttl = |spec: AgentSpec| {
+            environment(spec.role)
+                .into_iter()
+                .find(|(name, _)| *name == CACHE_TTL_VARIABLE)
+                .map(|(_, value)| value)
+        };
+        assert_eq!(ttl(config::worker(&settings, 1)), Some("5m"));
+        assert_eq!(ttl(config::reviewer(&settings)), Some("5m"));
+        assert_eq!(ttl(config::resolver(&settings)), Some("5m"));
+        assert_eq!(ttl(config::planner(&settings)), None);
+        assert_eq!(ttl(config::dispatcher(&settings)), None);
+    }
+
+    #[test]
+    fn only_workers_go_without_git_instructions() {
+        let settings = Settings::default();
+        let no_git = |spec: AgentSpec| environment(spec.role).contains(&(NO_GIT_INSTRUCTIONS, "1"));
+        assert!(no_git(config::worker(&settings, 1)));
+        // The reviewer writes the commit message, so it keeps Claude Code's guidance on it.
+        assert!(!no_git(config::reviewer(&settings)));
+        assert!(!no_git(config::planner(&settings)));
     }
 
     #[test]

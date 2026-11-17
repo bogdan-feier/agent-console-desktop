@@ -145,10 +145,11 @@ across rounds; workers and the reviewer only within their round.
   Workers have the `Skill` tool, so they do not get `--disable-slash-commands`. When
   Settings lists worker plugin folders, workers get `--setting-sources project,local`
   and one `--plugin-dir` per folder instead of the user's installed plugins.
-- `claude/mod.rs` starts workers, the reviewer and the resolver with
+- `claude/command.rs` (`environment`) starts workers, the reviewer and the resolver with
   `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`. Writing to the default one-hour cache costs twice the
   input price, the five-minute one 1.25 times, and these sessions never pause for long.
   The dispatcher and the planner keep the hour: you come back to them after reading.
+  Workers also get `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`: they never commit.
   `claude/locate.rs` reads `claude --help` once, when it finds the program, to know which
   options exist.
 - `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds

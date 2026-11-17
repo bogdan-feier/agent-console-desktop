@@ -19,7 +19,7 @@ use agent_console_core::claude::{locate, ClaudeRunner};
 use agent_console_core::config::{self, AuthMode, Role, Task, PLANNER_ID};
 use agent_console_core::event::EventKind;
 use agent_console_core::orchestrator::{
-    can_approve, can_chat, can_finish_round, can_message, can_send_back, supervised, Isolation,
+    can_approve, can_chat, can_finish_round, can_message, can_send_back, can_start_run, supervised, Isolation,
 };
 use agent_console_core::project;
 use agent_console_core::run::EventSink;
@@ -283,10 +283,8 @@ async fn start_run(
         return Err(format!("Folder not found: {}", project_dir.display()));
     }
     // Never lose work silently: a round whose changes were not applied or discarded
-    // keeps its run alive.
-    if state.runs().values().any(|active| active.run.has_open_round()) {
-        return Err("The current run has changes waiting. Apply or discard them first.".to_string());
-    }
+    // keeps its run alive, and blocks new runs in the same project.
+    can_start_run(&project_dir, state.runs().values().map(|active| active.run.as_ref()))?;
 
     let runner: Arc<dyn AgentRunner> = state.claude_runner().await?;
     let orchestrator = Orchestrator::new(runner, state.settings.clone(), Isolation::Worktrees);

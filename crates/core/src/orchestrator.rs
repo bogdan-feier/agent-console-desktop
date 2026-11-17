@@ -15,6 +15,7 @@
 //! so it remembers what it did and said.
 
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 
 use futures::future::join_all;
@@ -613,6 +614,30 @@ fn check_at_rest(run: &Run) -> Result<(), String> {
     }
 }
 
+/// May a new run start in `project_dir`, given the runs the app has open?
+///
+/// Only a run in the same project with changes still waiting stands in the way:
+/// applying one round's changes and then another's onto the same folder would make
+/// the second fail. A round in another project works in its own copies and applies
+/// to its own folder, so it does not block anything; it stays saved, and opening it
+/// from Runs brings its changes back.
+pub fn can_start_run<'a>(
+    project_dir: &Path,
+    open_runs: impl IntoIterator<Item = &'a Run>,
+) -> Result<(), String> {
+    // Compare real locations, so "~/glovebox" and "/Users/me/glovebox/" are one project.
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let here = real(project_dir);
+    match open_runs.into_iter().find(|run| run.has_open_round() && real(run.project()) == here) {
+        Some(waiting) => Err(format!(
+            "A run in this project still has changes waiting: \"{}\". Open it from Runs and apply or \
+             discard them first.",
+            first_line(&waiting.request)
+        )),
+        None => Ok(()),
+    }
+}
+
 /// May the user send `message` to the dispatcher, or ask for a plan, now?
 pub fn can_message(run: &Run, message: &str) -> Result<(), String> {
     check_message(message)?;
@@ -970,6 +995,24 @@ fn first_line(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_waiting_changes_in_the_same_project_stop_a_new_run() {
+        let here = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let quiet: crate::run::EventSink = Arc::new(|_: &str, _: &crate::Event| {});
+        let other_project = Run::new(elsewhere.path(), "Make the logo blue", quiet.clone());
+        other_project.open_round(None, false);
+        assert!(can_start_run(here.path(), [other_project.as_ref()]).is_ok(), "another project's round");
+
+        let settled = Run::new(here.path(), "An older run", quiet.clone());
+        assert!(can_start_run(here.path(), [settled.as_ref()]).is_ok(), "nothing waiting");
+
+        let waiting = Run::new(here.path(), "Recolour X and O\nwith details", quiet);
+        waiting.open_round(None, false);
+        let refused = can_start_run(here.path(), [other_project.as_ref(), waiting.as_ref()]).unwrap_err();
+        assert!(refused.contains("\"Recolour X and O\""), "names the run that waits: {refused}");
+    }
 
     #[test]
     fn a_quick_change_without_a_check_command_says_the_tests_did_not_run() {

@@ -42,6 +42,19 @@ const COMMIT_SETTINGS: &[&str] = &[
     "commit.gpgsign=false",
 ];
 const REVIEW: &str = "review";
+/// What running a project's tests or tools leaves behind, as git pathspecs that leave
+/// it out. A worker's new files that match are not committed, even when the project
+/// has no .gitignore to say so.
+const NEW_BUILD_OUTPUT: &[&str] = &[
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/.venv/**",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
+    ":(exclude,glob)**/.DS_Store",
+];
 
 /// The worktrees and branches of one round of work.
 #[derive(Debug)]
@@ -226,7 +239,11 @@ impl Workspace {
         task_files: &[String],
     ) -> Result<WorkerCommit, String> {
         let dir = self.worker_dir(number);
-        git(&dir, &["add", "-A"]).await?;
+        // New files go in unless they are build output, which running the tests leaves
+        // behind in a project with no .gitignore. Then every change to a file git already
+        // tracks, build output or not, so that deleting committed .pyc files still counts.
+        git(&dir, &[&["add", "-A", "--", "."], NEW_BUILD_OUTPUT].concat()).await?;
+        git(&dir, &["add", "-u"]).await?;
         let staged = git(&dir, &["diff", "--cached", "--name-only"]).await?;
         let changed: Vec<String> =
             staged.lines().filter(|line| !line.is_empty()).map(str::to_string).collect();
@@ -653,6 +670,32 @@ mod tests {
         assert_eq!(run_git(project.path(), &["worktree", "list"]).lines().count(), 1);
         assert!(run_git(project.path(), &["branch", "--list", "agent-console/*"]).trim().is_empty());
         assert!(!workspace.root.exists());
+    }
+
+    #[tokio::test]
+    async fn build_output_a_worker_leaves_behind_is_not_committed() {
+        let project = project();
+        // A project that once committed a compiled file, and has no .gitignore.
+        fs::create_dir_all(project.path().join("old/__pycache__")).unwrap();
+        fs::write(project.path().join("old/__pycache__/o.pyc"), "compiled").unwrap();
+        run_git(project.path(), &["add", "."]);
+        run_git(project.path(), &["commit", "-q", "-m", "tracked pyc"]);
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        let dir = workspace.worker_dir(1);
+
+        fs::write(dir.join("a.py"), "x = 2\n").unwrap();
+        for junk in
+            ["tests/__pycache__/t.pyc", ".venv/bin/python", "web/node_modules/x/index.js", ".DS_Store"]
+        {
+            fs::create_dir_all(dir.join(junk).parent().unwrap()).unwrap();
+            fs::write(dir.join(junk), "junk").unwrap();
+        }
+        // Untracking the committed one is a real change, and still goes in.
+        fs::remove_file(dir.join("old/__pycache__/o.pyc")).unwrap();
+
+        let commit = workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        assert_eq!(commit.changed, files(&["a.py", "old/__pycache__/o.pyc"]));
+        workspace.remove().await;
     }
 
     #[tokio::test]

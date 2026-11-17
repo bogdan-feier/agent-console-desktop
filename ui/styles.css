@@ -247,9 +247,6 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
 .card .turn-head { display: none; }
 .card .turn + .turn, .card .you + .turn { border-top: 1px dashed var(--line); padding-top: 8px; }
 .card .turn { max-width: none; }
-.card .verdict-line { font-weight: 600; }
-.card .verdict-line.approve { color: var(--good); }
-.card .verdict-line.needs_changes { color: var(--bad); }
 .card footer { border-top: 1px solid var(--line); padding: 8px 10px; }
 .card .message-form { display: flex; gap: 6px; align-items: flex-end; }
 .card .message-form textarea { height: 34px; min-height: 34px; max-height: 140px; font-size: 14px; padding: 6px 8px; resize: none; overflow: hidden; }

@@ -62,9 +62,9 @@ The project must be a git repository. When you approve a plan, it must have no u
 changes (see "Why worktrees" below).
 
 The window has two halves. On the left is the conversation: you, the dispatcher and the
-planner, plus the cards where you approve a plan or act on a review. On the right is the
-team: a card for each worker, one for the reviewer, and one for the resolver that only
-appears when it is needed. The strip at the top shows which step of the round you are at.
+planner, plus the cards where you approve a plan. On the right is the team: a card for
+each worker, one for the reviewer (where its review appears, with a button to send each
+problem back), and one for the resolver that only appears when it is needed. The strip at the top shows which step of the round you are at.
 
 1. **Message the team.** Choose the project in the top left, type in the box at the bottom of
    the conversation and press **Send** (or Cmd+Enter). With **Ask** selected, the dispatcher
@@ -87,8 +87,8 @@ appears when it is needed. The strip at the top shows which step of the round yo
    - If you set a **check command** in Settings, the app runs it on the merged result and
      gives the output to the reviewer. That costs no tokens and saves the reviewer the turns.
 6. **Fix (optional).** "Send back to Worker N" gives that worker the problems in its task;
-   the reviewer then checks again, looking only at what changed. You can also message any
-   worker or the reviewer directly, then press **Review again**.
+   the reviewer then checks again, looking only at what changed. The review itself is on
+   the reviewer's card. You can also message any worker directly, then press **Review again**.
 7. **Apply or discard.** **See changes and apply** opens the round's changes file by file,
    with the lines each worker added and removed. From there, **Apply only** puts them into
    your project as staged changes for you to commit, and **Apply and commit** also makes the

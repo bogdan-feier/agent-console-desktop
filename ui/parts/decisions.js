@@ -1,5 +1,5 @@
-// The cards in the conversation that wait for you: the plan to approve, the
-// reviewer's verdict, and the result of the project's own checks.
+// The cards that wait for you: the plan to approve and the result of the project's
+// own checks in the conversation, and the reviewer's verdict on the reviewer's card.
 
 import { button, clearProblem, el, showProblem } from "./dom.js";
 import { lockPlans, refreshControls } from "./controls.js";
@@ -99,7 +99,7 @@ async function approvePlan(box) {
 }
 
 export function showReview(agent, event) {
-  for (const old of thread().querySelectorAll(".decision.review button")) old.remove();
+  for (const old of document.querySelectorAll(".decision.review button")) old.remove();
   app.verdict = event.verdict;
 
   const box = el("div", "decision review review-hue verdict-" + event.verdict);
@@ -112,14 +112,10 @@ export function showReview(agent, event) {
     for (const item of event.consider) list.append(rich("li", item));
     box.append(list);
   }
-  addToThread(box);
-
-  // The reviewer's card gets a one-line version.
-  addToTurn(agent, el("div", "verdict-line " + event.verdict, event.verdict === "approve"
-    ? "Approved. Details in the conversation."
-    : "Needs changes. Details in the conversation."));
+  // On the reviewer's card, under the work that led to it.
+  addToTurn(agent, box);
   refreshControls();
-  reveal(box);
+  box.scrollIntoView({ block: "nearest" });
 }
 
 /// One group per task, each with a button that sends it back to that task's worker.

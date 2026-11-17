@@ -31,16 +31,17 @@ function buildCard(agent) {
   const log = el("div", "log");
   root.append(header, log);
 
-  // The resolver gets no message box: it runs inside a merge that is half-done,
-  // so there is no moment at which you could usefully talk to it.
+  // Only workers get a message box. The resolver runs inside a merge that is
+  // half-done, and the reviewer's verdict is final: to have it look again, use
+  // "Review again" in the round bar.
   let form = null;
   let input = null;
-  if (agent.role !== "resolver") {
+  if (agent.role === "worker") {
     const footer = el("footer");
     form = el("form", "message-form");
     input = el("textarea");
     input.rows = 1;
-    input.placeholder = agent.role === "reviewer" ? "Message the reviewer" : "Message " + agent.label;
+    input.placeholder = "Message " + agent.label;
     input.setAttribute("aria-label", "Message " + agent.label);
     const send = el("button", "", "Send");
     send.type = "submit";

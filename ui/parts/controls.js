@@ -65,7 +65,7 @@ export function setRound(open, quick = false, tasks = []) {
   } else {
     // The workers' and reviewer's sessions ended with the round.
     for (const agent of Object.values(agents)) if (agent.card) agent.hasWorked = false;
-    for (const old of thread().querySelectorAll(".decision.review button")) old.remove();
+    for (const old of document.querySelectorAll(".decision.review button")) old.remove();
     // Nothing is waiting on that round any more, so neither is any plan.
     for (const hint of thread().querySelectorAll(".round-wait")) hint.remove();
   }
@@ -108,7 +108,7 @@ export function refreshControls() {
 
   for (const agent of Object.values(agents)) {
     if (!agent.card || !agent.card.form) continue;
-    // Workers and the reviewer can be messaged during the round they worked in.
+    // Workers can be messaged during the round they worked in.
     const usable = rest && agent.hasWorked && app.roundOpen;
     for (const control of agent.card.form.querySelectorAll("textarea, button")) control.disabled = !usable;
   }
@@ -124,8 +124,9 @@ export function refreshControls() {
       : app.verdict === "needs_changes" ? "The reviewer asked for changes."
         : "The workers' changes are ready.";
 
-  // Buttons inside the conversation say what they need in a data-needs attribute.
-  for (const node of thread().querySelectorAll("[data-needs]")) {
+  // Buttons in the conversation and on the reviewer's card say what they need in a
+  // data-needs attribute.
+  for (const node of document.querySelectorAll("[data-needs]")) {
     const needsApproval = node.dataset.needs === "approval";
     node.disabled = needsApproval
       ? app.runState !== "awaiting_approval" || app.roundOpen || app.readOnly

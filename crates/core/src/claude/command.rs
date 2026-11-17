@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::config::{AgentSpec, SKILL_TOOL};
+use crate::config::{AgentSpec, Role, SKILL_TOOL};
 
 /// Leave skills and slash commands out of the session. Passed only to agents without
 /// the Skill tool, who could not use them anyway, so it only removes the skill
@@ -24,6 +24,22 @@ const PROJECT_SETTINGS_ONLY: &str = "--setting-sources";
 const PLUGIN_DIR: &str = "--plugin-dir";
 const EFFORT: &str = "--effort";
 const DENIED: &str = "--disallowedTools";
+
+/// How long Claude Code keeps this session's prompt in the cache. Writing to the
+/// one-hour cache costs twice the input price, the five-minute one 1.25 times.
+pub const CACHE_TTL_VARIABLE: &str = "CLAUDE_CODE_PROMPT_CACHE_TTL";
+
+/// The cache lifetime for an agent, or `None` for Claude Code's default (one hour on a
+/// subscription). Workers, the reviewer and the resolver work in one burst with seconds
+/// between turns, so the hour is paid for and never used. The dispatcher and the
+/// planner keep it: you come back to them after reading a plan or a review, often more
+/// than five minutes later.
+pub fn cache_ttl(role: Role) -> Option<&'static str> {
+    match role {
+        Role::Worker | Role::Reviewer | Role::Resolver => Some("5m"),
+        Role::Dispatcher | Role::Planner => None,
+    }
+}
 
 /// `known_flags` is what this version of `claude` lists in `--help` (see
 /// `locate.rs`); `None` means it is not known. The usage-saving flags above are only
@@ -215,6 +231,16 @@ mod tests {
         // A claude without --plugin-dir keeps the installed plugins rather than losing all.
         let older = build_args(&config::worker(&settings, 1), None, Some(&flags(&[PROJECT_SETTINGS_ONLY])));
         assert!(!has(&older, PROJECT_SETTINGS_ONLY));
+    }
+
+    #[test]
+    fn only_the_agents_you_come_back_to_keep_the_hour_long_cache() {
+        let settings = Settings::default();
+        assert_eq!(cache_ttl(config::worker(&settings, 1).role), Some("5m"));
+        assert_eq!(cache_ttl(config::reviewer(&settings).role), Some("5m"));
+        assert_eq!(cache_ttl(config::resolver(&settings).role), Some("5m"));
+        assert_eq!(cache_ttl(config::planner(&settings).role), None);
+        assert_eq!(cache_ttl(config::dispatcher(&settings).role), None);
     }
 
     #[test]

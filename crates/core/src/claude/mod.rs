@@ -102,6 +102,9 @@ impl AgentRunner for ClaudeRunner {
         // starts (a long test run, say) can be stopped together with it.
         #[cfg(unix)]
         command.process_group(0);
+        if let Some(ttl) = command::cache_ttl(spec.role) {
+            command.env(command::CACHE_TTL_VARIABLE, ttl);
+        }
         if self.auth == AuthMode::ClaudeLogin {
             // An API key would win over the login and bill the API account instead.
             command.env_remove(API_KEY_VARIABLE);

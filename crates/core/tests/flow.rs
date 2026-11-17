@@ -192,7 +192,8 @@ async fn who_can_be_talked_to_and_when() {
     supervised(run.clone(), orchestrator.plan(&run, None)).await;
     supervised(run.clone(), orchestrator.build(&run, run.tasks())).await;
     assert!(can_chat(&run, "worker-3", "hello").is_ok());
-    assert!(can_chat(&run, "reviewer", "why?").is_ok());
+    // Not even after it reviewed: its verdict is final, and "Review again" asks again.
+    assert!(can_chat(&run, "reviewer", "why?").is_err());
     let too_long = "x".repeat(agent_console_core::orchestrator::MAX_MESSAGE_CHARS + 1);
     assert!(can_chat(&run, "planner", &too_long).is_err());
 }

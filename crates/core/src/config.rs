@@ -278,12 +278,6 @@ Do not commit, push, or add dependencies. If you change code, run the relevant t
 briefly what you changed. Reuse what you already know from this session instead of reading
 files again.";
 
-const REVIEWER_CHAT_INSTRUCTIONS: &str = "\
-You are the reviewer in a small team and you already reviewed the workers' tasks in this
-session. The user is now asking you follow-up questions. Answer them briefly, using the code as
-evidence. You cannot edit files. Reuse what you already read in this session instead of reading
-it again.";
-
 // --- Shapes of the structured answers ----------------------------------------
 // The dispatcher, the planner and the reviewer must answer with JSON matching these
 // schemas, so the app can act on the answer instead of guessing from free text.
@@ -666,17 +660,6 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
     }
 }
 
-/// The reviewer when the user asks it follow-up questions: free-form answers.
-pub fn reviewer_chat(settings: &Settings) -> AgentSpec {
-    AgentSpec {
-        instructions: instructions(REVIEWER_CHAT_INSTRUCTIONS, settings),
-        output_schema: None,
-        max_turns: chat_turns(settings),
-        chat: true,
-        ..reviewer(settings)
-    }
-}
-
 /// The resolver, which only runs when two workers' changes clash. It uses the
 /// workers' model: it is the same kind of work, on a few files.
 pub fn resolver(settings: &Settings) -> AgentSpec {
@@ -701,11 +684,12 @@ pub fn resolver(settings: &Settings) -> AgentSpec {
 }
 
 /// The chat version of the agent with this ID, or `None` if you cannot message it
-/// directly (the dispatcher is reached through the main message box instead).
+/// directly. The dispatcher is reached through the main message box instead, and
+/// the reviewer not at all: its verdict is final for the round, and "Review again"
+/// asks it to look once more.
 pub fn chat_spec(settings: &Settings, agent_id: &str) -> Option<AgentSpec> {
     match agent_id {
         PLANNER_ID => Some(planner_chat(settings)),
-        REVIEWER_ID => Some(reviewer_chat(settings)),
         _ => worker_number(agent_id).map(|number| worker_chat(settings, number)),
     }
 }
@@ -780,12 +764,10 @@ mod tests {
         assert!(planner_chat.chat && planner_chat.output_schema.is_none());
         assert_eq!(planner_chat.tools, planner(&settings).tools);
 
-        let reviewer_chat = chat_spec(&settings, "reviewer").unwrap();
-        assert!(reviewer_chat.output_schema.is_none());
-        assert!(!reviewer_chat.tools.iter().any(|tool| tool == "Edit"));
-
         assert_eq!(chat_spec(&settings, "worker-3").unwrap().id, "worker-3");
-        for not_messageable in ["dispatcher", "worker-0", "worker-4", "reviewer-1", "boss", "worker"] {
+        for not_messageable in
+            ["dispatcher", "reviewer", "worker-0", "worker-4", "reviewer-1", "boss", "worker"]
+        {
             assert!(chat_spec(&settings, not_messageable).is_none(), "{not_messageable}");
         }
     }

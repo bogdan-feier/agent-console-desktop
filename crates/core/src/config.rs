@@ -177,6 +177,10 @@ Rules for the plan:
   stand alone: what to change, the expected behaviour, and which tests to add. Name the
   functions and parts of files to change, so the worker does not have to search for them.
 - List every file the worker may create or edit in \"files\". Give each task its own test file.
+- Set \"hard\" to true only when the task needs judgment beyond following your instructions:
+  reasoning across several files, behaviour you could not pin down, concurrency, subtle edge
+  cases, or finding the cause of a bug. A hard task runs on a stronger, costlier model, so
+  leave it false when a careful developer could do the task from your instructions alone.
 - Put in \"context\" what you found while reading that this worker will need, so it does
   not have to go and find it again: the signatures it will call or change, where in each
   file they are, how the project writes its tests, anything about the code that would
@@ -318,6 +322,25 @@ pub struct Task {
     /// `#[serde(default)]` so plans saved before this field existed still load.
     #[serde(default)]
     pub context: String,
+    /// The planner's call that this task needs judgment beyond following its
+    /// instructions. A hard task runs on [`HARD_TASK_MODEL`] when workers are on
+    /// Haiku; see [`for_task`]. You can change it on the plan card before approving.
+    #[serde(default)]
+    pub hard: bool,
+}
+
+/// The model a hard task runs on when the workers' model is Haiku.
+pub const HARD_TASK_MODEL: &str = "sonnet";
+
+/// A worker's spec for this task: a hard task moves from Haiku to [`HARD_TASK_MODEL`].
+/// Any other worker model was the user's choice, so it is left alone.
+pub fn for_task(mut spec: AgentSpec, task: &Task) -> AgentSpec {
+    if task.hard && spec.model.contains("haiku") {
+        spec.model = HARD_TASK_MODEL.to_string();
+        // An effort meant for Haiku is not a choice about Sonnet: use Sonnet's own default.
+        spec.effort = None;
+    }
+    spec
 }
 
 /// What the planner returns.
@@ -400,9 +423,10 @@ fn plan_schema(max_tasks: usize) -> Value {
                         "title": { "type": "string" },
                         "instructions": { "type": "string" },
                         "files": { "type": "array", "items": { "type": "string" } },
-                        "context": { "type": "string" }
+                        "context": { "type": "string" },
+                        "hard": { "type": "boolean" }
                     },
-                    "required": ["title", "instructions", "files", "context"],
+                    "required": ["title", "instructions", "files", "context", "hard"],
                     "additionalProperties": false
                 }
             }
@@ -755,6 +779,33 @@ mod tests {
         assert_eq!(planner(&settings).effort, Some(Effort::Max));
         assert_eq!(worker(&settings, 3).model, "haiku");
         assert_eq!(reviewer(&settings).model, "haiku");
+    }
+
+    #[test]
+    fn a_hard_task_moves_a_haiku_worker_to_sonnet_and_nothing_else() {
+        let settings = defaults();
+        let task = |hard| Task {
+            title: "t".to_string(),
+            instructions: "i".to_string(),
+            files: Vec::new(),
+            context: String::new(),
+            hard,
+        };
+        assert_eq!(for_task(worker(&settings, 1), &task(false)).model, "haiku");
+        let hard = for_task(worker(&settings, 1), &task(true));
+        assert_eq!(hard.model, HARD_TASK_MODEL);
+        assert_eq!(hard.effort, None);
+        // A worker model the user picked is theirs, hard task or not.
+        let mut chosen = defaults();
+        chosen.worker.model = "opus".to_string();
+        assert_eq!(for_task(worker(&chosen, 1), &task(true)).model, "opus");
+        // Older plans have no "hard" field: they load as not hard.
+        let old: Task = serde_json::from_str(r#"{"title":"t","instructions":"i"}"#).unwrap();
+        assert!(!old.hard);
+        assert!(plan_schema(3)["properties"]["tasks"]["items"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("hard")));
     }
 
     #[test]

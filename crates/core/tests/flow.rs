@@ -234,6 +234,7 @@ async fn a_single_task_uses_one_worker() {
         instructions: "Do it".to_string(),
         files: vec!["a.py".to_string()],
         context: String::new(),
+        hard: false,
     };
 
     supervised(run.clone(), instant_script().build(&run, vec![task])).await;

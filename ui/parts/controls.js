@@ -16,6 +16,8 @@ export function lockPlans() {
   for (const plan of thread().querySelectorAll(".decision.plan")) {
     for (const node of plan.querySelectorAll("button, .hint")) node.remove();
     for (const field of plan.querySelectorAll("input, textarea")) field.readOnly = true;
+    // readOnly does not stop a checkbox from being ticked.
+    for (const box of plan.querySelectorAll("input[type=checkbox]")) box.disabled = true;
   }
 }
 

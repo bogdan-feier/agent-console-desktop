@@ -514,6 +514,7 @@ mod tests {
             instructions: instructions.to_string(),
             files: Vec::new(),
             context: String::new(),
+            hard: false,
         }
     }
 

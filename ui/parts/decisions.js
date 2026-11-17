@@ -65,7 +65,17 @@ function taskFields(task, number) {
   files.dataset.field = "files";
   files.setAttribute("aria-label", "Files for task " + number + ", separated by commas");
 
-  card.append(title, instructions, files);
+  // The planner's call that this task needs judgment. It runs on Sonnet when the
+  // workers are on Haiku; any other worker model is left as Settings has it.
+  const hardSwitch = el("label", "switch");
+  const hard = el("input");
+  hard.type = "checkbox";
+  hard.checked = Boolean(task.hard);
+  hard.dataset.field = "hard";
+  hardSwitch.append(hard, el("span", null, "Needs judgment "),
+    el("span", "hint", "(runs on Sonnet instead of Haiku)"));
+
+  card.append(title, instructions, files, hardSwitch);
 
   // What the planner read, passed on so the worker does not read it again. Folded
   // away: it is usually right and rarely interesting, but when a worker goes wrong
@@ -89,6 +99,7 @@ async function approvePlan(box) {
     instructions: card.querySelector("[data-field=instructions]").value,
     files: card.querySelector("[data-field=files]").value.split(",").map((file) => file.trim()).filter(Boolean),
     context: card.querySelector("[data-field=context]")?.value ?? "",
+    hard: card.querySelector("[data-field=hard]").checked,
   }));
   clearProblem();
   try {

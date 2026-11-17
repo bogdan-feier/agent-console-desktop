@@ -104,9 +104,14 @@ impl Orchestrator {
     /// Check [`can_chat`] first. A failed reply is shown in the agent's panel and
     /// the run goes back to the state it was in, so one bad answer does not end it.
     pub async fn chat(&self, run: &Run, agent_id: &str, message: &str) -> Result<(), AgentError> {
-        let Some(spec) = config::chat_spec(&self.settings(), agent_id) else {
+        let Some(mut spec) = config::chat_spec(&self.settings(), agent_id) else {
             return Err(AgentError(format!("There is no agent called {agent_id}.")));
         };
+        // A worker carries on in the model its task ran on, so a hard task's session
+        // does not drop back to Haiku halfway through.
+        if let Some(task) = config::worker_number(agent_id).and_then(|number| run.task(number)) {
+            spec = config::for_task(spec, &task);
+        }
         let previous = run.state();
         run.set_state(RunState::Chatting);
         run.emit(Some(agent_id), EventKind::UserMessage { text: message.to_string() });
@@ -257,6 +262,8 @@ impl Orchestrator {
             files: Vec::new(),
             // Nothing was read beforehand: a quick change has no planner.
             context: String::new(),
+            // Quick is the cheap path for small changes, so it stays on the workers' model.
+            hard: false,
         }]);
 
         let workspace = match self.isolation {
@@ -508,8 +515,8 @@ impl Orchestrator {
     /// Run worker `number` on its task (or on the reviewer's findings, for a fix) and
     /// save what it changed. Returns false if the worker failed.
     async fn build_one(&self, run: &Run, number: usize, is_fix: bool) -> bool {
-        let spec = config::worker(&self.settings(), number);
         let Some(task) = run.task(number) else { return false };
+        let spec = config::for_task(config::worker(&self.settings(), number), &task);
         let (prompt, session) = match run.review() {
             Some(review) if is_fix => (fix_prompt(&review, number), run.session(&spec.id)),
             _ => (worker_prompt(&task, run.round_is_quick()), None),
@@ -905,6 +912,7 @@ mod tests {
             context: "greet(name) is at app.py:12 and returns an f-string. Tests use \
                       plain asserts, no fixtures."
                 .to_string(),
+            hard: false,
         };
 
         let prompt = worker_prompt(&task, false);
@@ -922,6 +930,7 @@ mod tests {
             instructions: "Read it from the environment.".to_string(),
             files: Vec::new(),
             context: String::new(),
+            hard: false,
         };
 
         let quick = worker_prompt(&task, true);
@@ -941,6 +950,7 @@ mod tests {
             instructions: "Add it next to greet.".to_string(),
             files: vec!["app.py".to_string()],
             context: "   ".to_string(),
+            hard: false,
         };
 
         let prompt = worker_prompt(&task, false);

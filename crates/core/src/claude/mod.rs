@@ -160,10 +160,13 @@ impl AgentRunner for ClaudeRunner {
                             }
                             Block::ToolUse { name, input } if name != STRUCTURED_OUTPUT_TOOL => {
                                 let detail = describe_tool_call(&name, &input);
-                                if name == "Bash" {
-                                    last_command =
-                                        input.get("command").and_then(Value::as_str).map(str::to_string);
-                                }
+                                // Only the latest call counts: a refused Read must not be
+                                // labelled with a shell command from earlier on.
+                                last_command = if name == "Bash" {
+                                    input.get("command").and_then(Value::as_str).map(str::to_string)
+                                } else {
+                                    None
+                                };
                                 run.emit(Some(agent), EventKind::Tool { name, detail });
                             }
                             _ => {}
@@ -175,10 +178,8 @@ impl AgentRunner for ClaudeRunner {
                         if let Block::ToolResult { content, is_error: Some(true) } = block {
                             let text = tool_result_text(&content);
                             let allow_rule = refused_command(&text, last_command.as_deref());
-                            run.emit(
-                                Some(agent),
-                                EventKind::ToolError { detail: shorten(&text), allow_rule },
-                            );
+                            let detail = tool_error_detail(&text, last_command.as_deref());
+                            run.emit(Some(agent), EventKind::ToolError { detail, allow_rule });
                         }
                     }
                 }
@@ -252,19 +253,34 @@ fn describe_tool_call(name: &str, input: &Value) -> String {
     shorten(input.get(field).and_then(Value::as_str).unwrap_or_default())
 }
 
+/// Whether a tool result says the call was refused for want of permission, rather
+/// than run and failed.
+fn is_refusal(result_text: &str) -> bool {
+    let said = result_text.to_lowercase();
+    said.contains("permission")
+        || said.contains("not allowed")
+        || said.contains("haven't granted")
+        || said.contains("has not been granted")
+}
+
 /// When a shell command was refused for want of permission, the rule that would
 /// allow commands like it. `None` when the command simply failed: that is the
 /// project's problem, not a permission to grant.
 fn refused_command(result_text: &str, command: Option<&str>) -> Option<String> {
-    let said = result_text.to_lowercase();
-    let refused = said.contains("permission")
-        || said.contains("not allowed")
-        || said.contains("haven't granted")
-        || said.contains("has not been granted");
-    if !refused {
+    if !is_refusal(result_text) {
         return None;
     }
     allow_rule(command?)
+}
+
+/// What a failed tool call's card says. For a refused shell command, the command
+/// itself: Claude Code's refusal is a long paragraph that never names it, and the
+/// command is what you need to decide whether to allow it.
+fn tool_error_detail(result_text: &str, command: Option<&str>) -> String {
+    match command {
+        Some(command) if is_refusal(result_text) => format!("not allowed: {}", shorten(command)),
+        _ => shorten(result_text),
+    }
 }
 
 /// "npm run lint --fix" -> "npm run *", "pytest -q" -> "pytest *".
@@ -311,6 +327,20 @@ mod tests {
         assert_eq!(refused_command(refused, None), None);
         // A rule we could not store safely is not offered at all.
         assert_eq!(refused_command(refused, Some("foo(bar)")), None);
+    }
+
+    #[test]
+    fn a_refused_command_is_named_on_its_card() {
+        let refused =
+            "Permission to use Bash has been denied because Claude Code is running in don't ask mode.";
+        assert_eq!(
+            tool_error_detail(refused, Some("uv run pytest -q && uv run ruff check src")),
+            "not allowed: uv run pytest -q && uv run ruff check src"
+        );
+        // A command that ran and failed keeps its own message.
+        assert_eq!(tool_error_detail("error: 2 tests failed", Some("cargo test")), "error: 2 tests failed");
+        // Not a shell call: the refusal text is all there is.
+        assert_eq!(tool_error_detail(refused, None), refused);
     }
 
     #[test]

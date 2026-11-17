@@ -94,7 +94,8 @@ async fn a_successful_session_becomes_events_and_an_answer() {
     let tools: Vec<_> = collected.of_type("tool").iter().map(|e| e["name"].clone()).collect();
     assert_eq!(tools, ["Read", "Bash"]);
     assert_eq!(collected.of_type("tool")[0]["detail"], "src/a.py");
-    assert!(collected.of_type("tool_error")[0]["detail"].as_str().unwrap().contains("denied"));
+    // A refused shell command is named, not just described.
+    assert_eq!(collected.of_type("tool_error")[0]["detail"], "not allowed: rm -rf build");
     let result = &collected.of_type("result")[0];
     assert_eq!(result["cost_usd"], 0.42);
     assert_eq!(result["turns"], 3);

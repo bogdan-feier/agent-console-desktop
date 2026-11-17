@@ -93,6 +93,10 @@ pub const CHECK_COMMANDS: &[&str] = &[
 /// their copy: your real repository, your account, your machine, your secrets.
 /// Argument patterns are not airtight (`rm -fr` is not `rm -rf`), so treat this as
 /// a seatbelt, not a wall: it stops the careless case, not a determined one.
+/// The entries of [`DENIED_COMMANDS`] the sandbox makes unnecessary: with "any
+/// command" on, deleting is confined to the agent's own folder by the operating system.
+const SANDBOX_CONFINES: &[&str] = &["Bash(rm -rf *)", "Bash(rm -fr *)", "Bash(rm -r *)"];
+
 pub const DENIED_COMMANDS: &[&str] = &[
     "Bash(sudo *)",
     "Bash(rm -rf *)",
@@ -524,6 +528,9 @@ pub struct AgentSpec {
     /// Plugin folders to load instead of the user's installed plugins. Empty means the
     /// installed ones load as usual.
     pub plugin_dirs: Vec<String>,
+    /// Run shell commands in Claude Code's sandbox (see `claude/sandbox.rs`): any
+    /// command, kept inside the agent's own folder by the operating system.
+    pub sandboxed: bool,
     /// True when the user is talking to the agent directly, rather than giving it
     /// a task from the plan.
     pub chat: bool,
@@ -572,7 +579,13 @@ fn shell_access(settings: &Settings, extra: &[&str]) -> (Vec<String>, Vec<String
     if settings.full_shell {
         tools.push(SHELL_TOOL.to_string());
         allowed.push(format!("{SHELL_TOOL}(*)"));
-        denied = names(&[DENIED_COMMANDS]);
+        // "Any command" runs in the sandbox, which keeps deleting inside the agent's
+        // own folder, so deleting a folder is allowed. The rest of the list stays as a
+        // second line behind the sandbox.
+        denied = names(&[DENIED_COMMANDS])
+            .into_iter()
+            .filter(|rule| !SANDBOX_CONFINES.contains(&rule.as_str()))
+            .collect();
     } else {
         let rules = command_rules(settings);
         if !rules.is_empty() {
@@ -605,6 +618,7 @@ pub fn dispatcher(settings: &Settings) -> AgentSpec {
         max_turns: settings.dispatcher.max_turns.unwrap_or(DISPATCHER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         plugin_dirs: Vec::new(),
+        sandboxed: false,
         chat: true,
     }
 }
@@ -626,6 +640,7 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         max_turns: settings.planner.max_turns.unwrap_or(PLANNER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         plugin_dirs: Vec::new(),
+        sandboxed: false,
         chat: false,
     }
 }
@@ -661,6 +676,7 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
         max_turns: settings.worker.max_turns.unwrap_or(WORKER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         plugin_dirs: settings.worker_plugins.clone(),
+        sandboxed: settings.full_shell,
         chat: false,
     }
 }
@@ -693,6 +709,7 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
         max_turns: settings.reviewer.max_turns.unwrap_or(REVIEWER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
         plugin_dirs: Vec::new(),
+        sandboxed: settings.full_shell,
         chat: false,
     }
 }
@@ -716,6 +733,7 @@ pub fn resolver(settings: &Settings) -> AgentSpec {
         max_turns: RESOLVER_MAX_TURNS,
         use_mcp_servers: settings.use_mcp_servers,
         plugin_dirs: Vec::new(),
+        sandboxed: false,
         chat: false,
     }
 }
@@ -919,12 +937,23 @@ mod tests {
         // Nothing listed, and with "any command" on it does not matter.
         let settings = Settings { full_shell: true, allowed_commands: Vec::new(), ..Settings::default() };
 
-        let worker = worker(&settings, 1);
+        let any = worker(&settings, 1);
 
-        assert!(worker.tools.contains(&"Bash".to_string()));
-        assert!(worker.allowed.contains(&"Bash(*)".to_string()));
-        assert!(worker.denied.contains(&"Bash(git push *)".to_string()));
-        assert!(worker.denied.contains(&"Bash(sudo *)".to_string()));
+        assert!(any.tools.contains(&"Bash".to_string()));
+        assert!(any.allowed.contains(&"Bash(*)".to_string()));
+        assert!(any.denied.contains(&"Bash(git push *)".to_string()));
+        assert!(any.denied.contains(&"Bash(sudo *)".to_string()));
+        // Any command runs in the sandbox, which confines deleting to the agent's folder.
+        assert!(any.sandboxed);
+        assert!(!any.denied.contains(&"Bash(rm -rf *)".to_string()));
+        assert!(reviewer(&settings).sandboxed);
+        for spec in [dispatcher(&settings), planner(&settings), resolver(&settings)] {
+            assert!(!spec.sandboxed, "{} runs no shell", spec.id);
+        }
+        // With a list of commands instead, no sandbox, and the whole deny list holds.
+        let listed = worker(&Settings::default(), 1);
+        assert!(!listed.sandboxed);
+        assert!(listed.denied.contains(&"Bash(rm -rf *)".to_string()));
     }
 
     #[test]

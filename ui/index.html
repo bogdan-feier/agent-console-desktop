@@ -158,7 +158,7 @@
         <p class="hint">Agents run with nobody there to click "allow", so anything not allowed here is refused. Only workers can edit files, and only in their own copy of the project.</p>
         <label class="switch">
           <input type="checkbox" id="full-shell">
-          <span>Let the workers and the reviewer run any command <span class="hint">(no list to keep; they still cannot push, sudo, read your keychain or reach the network &mdash; and they can run anything else, including commands that change files outside their own copy of the project)</span></span>
+          <span>Let the workers and the reviewer run any command, in a sandbox <span class="hint">(they can delete, rename, use git and install packages in their copy of the project; macOS's sandbox stops them writing outside it, reading .env files or your keys, and reaching the network except package registries)</span></span>
         </label>
         <div class="field-row">
           <label for="commands">Shell commands the workers and the reviewer may run, one per line</label>

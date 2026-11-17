@@ -295,9 +295,15 @@ cargo tauri icon assets/app-icon.png -o src-tauri/icons
 
 - **Check the file lists before you approve.** Tasks that share a file will clash when
   their work is merged.
-- **Shell commands are limited.** Agents may run the commands listed in Settings, under
-  Permissions, plus whatever the project's `.claude/settings.json` allows. Everything
-  else is refused and shows up in that agent's steps as "Refused or failed".
+- **Shell commands are limited, or sandboxed.** Agents may run the commands listed in
+  Settings, under Permissions, plus whatever the project's `.claude/settings.json` allows.
+  Everything else is refused and shows up in that agent's steps as "Refused or failed".
+  With **any command** on, the workers and the reviewer may run anything, inside Claude
+  Code's sandbox (macOS's own): they can delete, rename, use git and install packages in
+  their copy of the project, but cannot write outside it, read `.env` files or your
+  credential folders (`~/.ssh`, `~/.aws` and the like), or reach the network except the
+  package registries (PyPI, npm, crates.io). If the sandbox cannot start, the agent does
+  not start either. Environment variables are not hidden: keep secrets in files.
 - **Each session has a cap.** A session stops at the spending cap in Settings (5 dollars of
   API-equivalent usage by default). Long conversations with one agent count toward the same
   session, so a long brainstorm can reach it.

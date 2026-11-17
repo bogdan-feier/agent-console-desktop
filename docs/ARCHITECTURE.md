@@ -150,6 +150,18 @@ across rounds; workers and the reviewer only within their round.
   input price, the five-minute one 1.25 times, and these sessions never pause for long.
   The dispatcher and the planner keep the hour: you come back to them after reading.
   Workers also get `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`: they never commit.
+
+## The sandbox
+
+With "any command" on, workers and the reviewer start with `--settings` from
+`claude/sandbox.rs`: Claude Code's sandbox, so every shell command runs under macOS's
+Seatbelt. Writes are allowed in the agent's folder, the temp folder and its own git
+folder (`.git/worktrees/<name>`, so `git rm` works), and refused in the round's other
+folders, the rest of `.git` and everywhere else. Secret files and credential folders
+cannot be read, and the network reaches only package registries. A command the sandbox
+refuses is never retried outside it, and an agent whose `claude` cannot sandbox does not
+start. `rm -rf` and its spellings leave the deny list in this mode, since the sandbox
+already confines them.
   `claude/locate.rs` reads `claude --help` once, when it finds the program, to know which
   options exist.
 - `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds

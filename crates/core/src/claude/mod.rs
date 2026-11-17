@@ -7,6 +7,7 @@
 pub mod command;
 pub mod locate;
 pub mod protocol;
+pub mod sandbox;
 
 use std::path::Path;
 use std::process::Stdio;
@@ -22,6 +23,7 @@ use crate::event::EventKind;
 use crate::process::Group;
 use crate::run::Run;
 use crate::runner::{AgentError, AgentOutput, AgentRunner};
+use crate::worktrees;
 
 use locate::ClaudeLocation;
 use protocol::{parse_line, tool_result_text, Block, Line, ResultLine};
@@ -88,9 +90,28 @@ impl AgentRunner for ClaudeRunner {
             );
         }
 
+        let mut args = command::build_args(spec, resume, self.location.known_flags.as_ref());
+        if spec.sandboxed {
+            // "Any command" without the sandbox would be any command anywhere on this
+            // machine, so an agent that cannot be sandboxed does not start at all.
+            let known = self.location.known_flags.as_ref();
+            if known.is_some_and(|flags| !flags.contains(sandbox::SETTINGS_FLAG)) {
+                let message = "This version of Claude Code cannot run commands in a sandbox, so \"any \
+                               command\" cannot be kept inside the project. Update Claude Code, or turn \
+                               off \"any command\" in Settings."
+                    .to_string();
+                run.emit(Some(agent), EventKind::Error { message: message.clone(), tidy_with: None });
+                return Err(AgentError(message));
+            }
+            let git_dir = worktrees::git_dir(folder).await;
+            let others = sandbox::other_round_folders(folder, &worktrees::app_root());
+            args.push(sandbox::SETTINGS_FLAG.to_string());
+            args.push(sandbox::settings(git_dir.as_deref(), &others).to_string());
+        }
+
         let mut command = Command::new(&self.location.program);
         command
-            .args(command::build_args(spec, resume, self.location.known_flags.as_ref()))
+            .args(args)
             .current_dir(folder)
             .env("PATH", &self.location.path_variable)
             .stdin(Stdio::piped())

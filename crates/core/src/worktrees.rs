@@ -136,7 +136,7 @@ impl Workspace {
         let name = format!("{run_id}-round{round}");
         let workspace = Workspace {
             project_dir: project_dir.to_path_buf(),
-            root: std::env::temp_dir().join("agent-console").join(&name),
+            root: app_root().join(&name),
             base,
             branch_prefix: format!("agent-console/{name}"),
             workers,
@@ -188,7 +188,7 @@ impl Workspace {
         let name = format!("{run_id}-round{round}");
         let workspace = Workspace {
             project_dir: project_dir.to_path_buf(),
-            root: std::env::temp_dir().join("agent-console").join(&name),
+            root: app_root().join(&name),
             base: base.to_string(),
             branch_prefix: format!("agent-console/{name}"),
             workers,
@@ -571,6 +571,19 @@ fn path_arg(path: &Path) -> String {
 }
 
 /// Run git in `dir`. Returns what it printed, or what it complained about.
+/// Where every round's worktrees live, one folder per round.
+pub fn app_root() -> PathBuf {
+    std::env::temp_dir().join("agent-console")
+}
+
+/// The real git folder of `dir`. For a worktree that is a folder inside the main
+/// repository's `.git/worktrees/`, not the `.git` file in the worktree itself.
+/// `None` when `dir` is not in a git repository.
+pub async fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let found = git(dir, &["rev-parse", "--absolute-git-dir"]).await.ok()?;
+    Some(PathBuf::from(found.trim()))
+}
+
 async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)

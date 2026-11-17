@@ -245,6 +245,7 @@ fn describe_tool_call(name: &str, input: &Value) -> String {
         "Read" | "Edit" | "Write" => "file_path",
         "Bash" => "command",
         "Grep" | "Glob" => "pattern",
+        "Skill" => "skill",
         _ => return String::new(),
     };
     shorten(input.get(field).and_then(Value::as_str).unwrap_or_default())
@@ -316,6 +317,10 @@ mod tests {
         assert_eq!(describe_tool_call("Read", &json!({"file_path": "src/a.py"})), "src/a.py");
         assert_eq!(describe_tool_call("Bash", &json!({"command": "cargo test"})), "cargo test");
         assert_eq!(describe_tool_call("Grep", &json!({"pattern": "fn main"})), "fn main");
+        assert_eq!(
+            describe_tool_call("Skill", &json!({"skill": "dev-conventions:minimal-change"})),
+            "dev-conventions:minimal-change"
+        );
         assert_eq!(describe_tool_call("Mystery", &json!({"x": 1})), "");
     }
 

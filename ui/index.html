@@ -175,6 +175,9 @@
           <input type="checkbox" id="use-mcp">
           <span>Give agents my MCP servers <span class="hint">(off saves tokens: every server's tool list is sent on every turn of every agent)</span></span>
         </label>
+        <label for="worker-plugins">Plugin folders the workers load, one per line</label>
+        <textarea id="worker-plugins" rows="3" spellcheck="false" placeholder="~/claude-devkit/plugins/dev-conventions"></textarea>
+        <p class="hint">Leave empty to give workers the plugins installed in your Claude Code. Listing folders loads only those, and leaves out your user settings (<code>~/.claude/settings.json</code>), so every other plugin's skills stay out of every worker turn.</p>
       </section>
 
       <section class="settings-section" aria-labelledby="team-title">

@@ -5,11 +5,11 @@
 
 use std::collections::HashSet;
 
-use crate::config::AgentSpec;
+use crate::config::{AgentSpec, SKILL_TOOL};
 
-/// Leave skills and slash commands out of the session. The agents here cannot use
-/// skills anyway (the Skill tool is not in their tool list), so this only removes
-/// the skill descriptions that would otherwise be sent on every turn.
+/// Leave skills and slash commands out of the session. Passed only to agents without
+/// the Skill tool, who could not use them anyway, so it only removes the skill
+/// descriptions that would otherwise be sent on every turn.
 pub const NO_SKILLS: &str = "--disable-slash-commands";
 /// Use only the MCP servers given on the command line, which is none: no MCP
 /// servers start, and none of their tool descriptions are sent.
@@ -18,6 +18,10 @@ pub const NO_MCP_SERVERS: &str = "--strict-mcp-config";
 /// the date) into the first message. The system prompt then starts the same way in
 /// every session, so one session can reuse what another put in the prompt cache.
 pub const SHARED_SYSTEM_PROMPT: &str = "--exclude-dynamic-system-prompt-sections";
+/// Read only the project's own settings, not the user's, so the plugins installed in the
+/// user's Claude Code stay out; `--plugin-dir` then loads just the ones listed.
+const PROJECT_SETTINGS_ONLY: &str = "--setting-sources";
+const PLUGIN_DIR: &str = "--plugin-dir";
 const EFFORT: &str = "--effort";
 const DENIED: &str = "--disallowedTools";
 
@@ -66,13 +70,23 @@ pub fn build_args(
         push(&mut args, "--json-schema", &schema.to_string());
     }
 
-    for saving in [NO_SKILLS, SHARED_SYSTEM_PROMPT] {
-        if known(saving) {
-            args.push(saving.to_string());
-        }
+    let uses_skills = spec.tools.iter().any(|tool| tool == SKILL_TOOL);
+    if !uses_skills && known(NO_SKILLS) {
+        args.push(NO_SKILLS.to_string());
+    }
+    if known(SHARED_SYSTEM_PROMPT) {
+        args.push(SHARED_SYSTEM_PROMPT.to_string());
     }
     if !spec.use_mcp_servers && known(NO_MCP_SERVERS) {
         args.push(NO_MCP_SERVERS.to_string());
+    }
+    // Both or neither: dropping the user's plugins without loading the listed ones would
+    // leave the agent with none.
+    if !spec.plugin_dirs.is_empty() && known(PROJECT_SETTINGS_ONLY) && known(PLUGIN_DIR) {
+        push(&mut args, PROJECT_SETTINGS_ONLY, "project,local");
+        for folder in &spec.plugin_dirs {
+            push(&mut args, PLUGIN_DIR, folder);
+        }
     }
 
     if let Some(session) = resume {
@@ -133,7 +147,7 @@ mod tests {
     fn worker_can_edit_and_only_run_listed_commands() {
         let args = build_args(&config::worker(&Settings::default(), 1), Some("abc-123"), None);
         assert_eq!(value_after(&args, "--model"), "sonnet");
-        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write,Bash");
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write,Bash,Skill");
         let allowed = value_after(&args, "--allowedTools");
         assert!(allowed.contains("Edit") && allowed.contains("Bash(cargo test *)"));
         // Plain "Bash" would allow any command; it must only appear as specific rules.
@@ -181,7 +195,40 @@ mod tests {
         let settings = Settings { use_mcp_servers: true, ..Settings::default() };
         let args = build_args(&config::worker(&settings, 1), None, Some(&all_known()));
         assert!(!has(&args, NO_MCP_SERVERS));
-        assert!(has(&args, NO_SKILLS));
+    }
+
+    #[test]
+    fn listed_plugins_replace_the_installed_ones_for_workers_only() {
+        let settings =
+            Settings { worker_plugins: vec!["/p/one".into(), "/p/two".into()], ..Settings::default() };
+        let known = flags(&[PROJECT_SETTINGS_ONLY, PLUGIN_DIR]);
+
+        let worker = build_args(&config::worker(&settings, 1), None, Some(&known));
+        assert_eq!(value_after(&worker, PROJECT_SETTINGS_ONLY), "project,local");
+        let folders: Vec<&String> =
+            worker.windows(2).filter(|pair| pair[0] == PLUGIN_DIR).map(|pair| &pair[1]).collect();
+        assert_eq!(folders, ["/p/one", "/p/two"]);
+
+        let planner = build_args(&config::planner(&settings), None, Some(&known));
+        assert!(!has(&planner, PROJECT_SETTINGS_ONLY) && !has(&planner, PLUGIN_DIR));
+
+        // A claude without --plugin-dir keeps the installed plugins rather than losing all.
+        let older = build_args(&config::worker(&settings, 1), None, Some(&flags(&[PROJECT_SETTINGS_ONLY])));
+        assert!(!has(&older, PROJECT_SETTINGS_ONLY));
+    }
+
+    #[test]
+    fn only_workers_see_the_installed_skills() {
+        let settings = Settings::default();
+        let worker = build_args(&config::worker(&settings, 1), None, Some(&all_known()));
+        assert!(!has(&worker, NO_SKILLS));
+        assert!(value_after(&worker, "--allowedTools").split(',').any(|rule| rule == "Skill"));
+
+        for spec in [config::planner(&settings), config::reviewer(&settings)] {
+            let args = build_args(&spec, None, Some(&all_known()));
+            assert!(has(&args, NO_SKILLS), "{}", spec.id);
+            assert!(!value_after(&args, "--tools").contains("Skill"), "{}", spec.id);
+        }
     }
 
     #[test]

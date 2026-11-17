@@ -59,6 +59,9 @@ pub const MAX_BUDGET_USD_PER_AGENT: Option<f64> = Some(5.0);
 pub const READ_TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 pub const EDIT_TOOLS: &[&str] = &["Edit", "Write"];
 pub const SHELL_TOOL: &str = "Bash";
+/// Lets an agent load a skill from the user's installed plugins when its task needs one.
+/// Only workers get it: each agent with it pays for the skill descriptions on every turn.
+pub const SKILL_TOOL: &str = "Skill";
 /// Given to the dispatcher and the planner when "web access" is on in Settings.
 pub const WEB_TOOLS: &[&str] = &["WebSearch", "WebFetch"];
 
@@ -484,6 +487,9 @@ pub struct AgentSpec {
     pub max_turns: u32,
     /// Whether the session loads the MCP servers configured in Claude Code.
     pub use_mcp_servers: bool,
+    /// Plugin folders to load instead of the user's installed plugins. Empty means the
+    /// installed ones load as usual.
+    pub plugin_dirs: Vec<String>,
     /// True when the user is talking to the agent directly, rather than giving it
     /// a task from the plan.
     pub chat: bool,
@@ -564,6 +570,7 @@ pub fn dispatcher(settings: &Settings) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.dispatcher.max_turns.unwrap_or(DISPATCHER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
+        plugin_dirs: Vec::new(),
         chat: true,
     }
 }
@@ -584,6 +591,7 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.planner.max_turns.unwrap_or(PLANNER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
+        plugin_dirs: Vec::new(),
         chat: false,
     }
 }
@@ -601,7 +609,9 @@ pub fn planner_chat(settings: &Settings) -> AgentSpec {
 
 /// Worker `number`, counting from 1.
 pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
-    let (tools, allowed, denied) = shell_access(settings, EDIT_TOOLS);
+    let (mut tools, mut allowed, denied) = shell_access(settings, EDIT_TOOLS);
+    tools.push(SKILL_TOOL.to_string());
+    allowed.push(SKILL_TOOL.to_string());
     AgentSpec {
         id: format!("worker-{number}"),
         role: Role::Worker,
@@ -616,6 +626,7 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.worker.max_turns.unwrap_or(WORKER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
+        plugin_dirs: settings.worker_plugins.clone(),
         chat: false,
     }
 }
@@ -647,6 +658,7 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.reviewer.max_turns.unwrap_or(REVIEWER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
+        plugin_dirs: Vec::new(),
         chat: false,
     }
 }
@@ -680,6 +692,7 @@ pub fn resolver(settings: &Settings) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: RESOLVER_MAX_TURNS,
         use_mcp_servers: settings.use_mcp_servers,
+        plugin_dirs: Vec::new(),
         chat: false,
     }
 }

@@ -117,6 +117,7 @@ function fillSettingsForm(values) {
   $("web-access").checked = values.web_access;
   showCommandList();
   $("use-mcp").checked = values.use_mcp_servers;
+  $("worker-plugins").value = values.worker_plugins.join("\n");
   $("resolve-conflicts").checked = values.resolve_conflicts;
   $("worker-count").value = String(values.worker_count);
   $("check-command").value = values.check_command;
@@ -138,6 +139,8 @@ function readSettingsForm() {
   values.max_budget_usd = budget === "" ? null : Number(budget);
   values.chat_max_turns = readTurns("chat-turns");
   values.use_mcp_servers = $("use-mcp").checked;
+  // The Rust side trims each line, drops the empty ones and checks each is a folder.
+  values.worker_plugins = $("worker-plugins").value.split("\n");
   values.web_access = $("web-access").checked;
   values.full_shell = $("full-shell").checked;
   values.resolve_conflicts = $("resolve-conflicts").checked;

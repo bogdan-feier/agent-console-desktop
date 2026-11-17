@@ -142,6 +142,9 @@ across rounds; workers and the reviewer only within their round.
 
 - `claude/command.rs` adds `--disable-slash-commands`, `--strict-mcp-config` and
   `--exclude-dynamic-system-prompt-sections` when the installed `claude` lists them.
+  Workers have the `Skill` tool, so they do not get `--disable-slash-commands`. When
+  Settings lists worker plugin folders, workers get `--setting-sources project,local`
+  and one `--plugin-dir` per folder instead of the user's installed plugins.
   `claude/locate.rs` reads `claude --help` once, when it finds the program, to know which
   options exist.
 - `AgentRunner::parallel_start_gap` makes the orchestrator start parallel agents a few seconds

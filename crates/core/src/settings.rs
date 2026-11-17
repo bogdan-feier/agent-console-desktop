@@ -107,6 +107,10 @@ pub struct Settings {
     /// server adds its tool descriptions to every turn of every agent, and the agents
     /// here only need file and shell tools.
     pub use_mcp_servers: bool,
+    /// Plugin folders the workers load, in place of the plugins installed in your Claude
+    /// Code. Empty means workers get your installed plugins. Listing only the ones they
+    /// need keeps every other plugin's skill descriptions out of every worker turn.
+    pub worker_plugins: Vec<String>,
 
     // --- Permissions ---
     /// Shell commands workers and the reviewer may run, written as you would type them
@@ -201,6 +205,7 @@ impl Settings {
             reviewer,
             max_budget_usd: budget,
             use_mcp_servers: false,
+            worker_plugins: Vec::new(),
             allowed_commands: default_commands(),
             full_shell: false,
             web_access: false,
@@ -261,6 +266,20 @@ impl Settings {
         }
         self.allowed_commands = commands;
 
+        let mut plugins: Vec<String> = Vec::new();
+        for folder in &self.worker_plugins {
+            let folder = expand_home(folder.trim());
+            if folder.is_empty() || plugins.contains(&folder) {
+                continue;
+            }
+            // Checked here so a typo is a message in Settings, not a worker that fails to start.
+            if !Path::new(&folder).is_dir() {
+                return Err(format!("Worker plugins: {folder} is not a folder."));
+            }
+            plugins.push(folder);
+        }
+        self.worker_plugins = plugins;
+
         self.check_command = self.check_command.trim().to_string();
         if self.check_command.chars().count() > MAX_CHECK_COMMAND_LENGTH {
             return Err(format!("The check command can be at most {MAX_CHECK_COMMAND_LENGTH} characters."));
@@ -304,6 +323,14 @@ fn check_turns(turns: Option<u32>) -> Result<(), String> {
 /// a comma or brackets (they would break the list or the rule), nor a line break.
 /// A lone `*` would allow every command, which is too much for agents that run
 /// unattended.
+/// `~/x` -> `/Users/you/x`, so a path pasted from a terminal works.
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 fn check_command(command: &str) -> Result<(), String> {
     let problem = |why: &str| Err(format!("Allowed command \"{command}\": {why}"));
     if command.chars().count() > MAX_COMMAND_LENGTH {
@@ -615,6 +642,21 @@ mod tests {
         assert!(!settings.use_mcp_servers);
         assert_eq!(settings.allowed_commands, default_commands(), "new fields take their defaults");
         assert_eq!(settings.worker_count, WORKER_COUNT);
+    }
+
+    #[test]
+    fn worker_plugins_must_be_folders() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().to_string_lossy().to_string();
+        let settings = Settings {
+            worker_plugins: vec![format!(" {path} "), String::new(), path.clone()],
+            ..Settings::default()
+        };
+        assert_eq!(settings.validated().unwrap().worker_plugins, std::slice::from_ref(&path));
+
+        let missing = Settings { worker_plugins: vec![format!("{path}/nope")], ..Settings::default() };
+        assert!(missing.validated().unwrap_err().contains("is not a folder"));
+        assert!(expand_home("~/x").ends_with("/x") && !expand_home("~/x").starts_with('~'));
     }
 
     #[test]

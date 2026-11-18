@@ -11,13 +11,15 @@
 //!   config and hooks the app's own git commands would run outside the sandbox.
 //!   Not the other workers' folders of the same round.
 //! - Reads: everything except secrets: `.env` files and the usual credential folders.
-//! - Network: package registries only, so `uv add` or `npm install` work and
-//!   nothing else can be reached.
+//! - Network: package registries, so `uv add` or `npm install` work, and servers
+//!   on this machine, so an agent can start the app it built and call it. No other
+//!   host can be reached.
 //!
 //! Tried with a real `claude -p` session: deleting and renaming in the project and
 //! `git rm` worked; writing in the home folder, a sibling worker's folder,
 //! `.git/config` or `.git/hooks`, reading a denied file or `~/.ssh`, and reaching a
-//! host off the list were all refused.
+//! host off the list were all refused. Starting a server on 127.0.0.1 and calling it
+//! with curl worked, and curl to example.com was refused.
 
 use std::path::{Path, PathBuf};
 
@@ -69,7 +71,9 @@ pub fn settings(git_dir: Option<&Path>, others: &[PathBuf]) -> Value {
                 "denyWrite": deny_write,
                 "denyRead": SECRET_FOLDERS,
             },
-            "network": { "allowedDomains": PACKAGE_REGISTRIES },
+            // The registries, so `uv add` works; and servers on this machine, so an
+            // agent can start the app it built and try it. Nowhere else.
+            "network": { "allowedDomains": PACKAGE_REGISTRIES, "allowLocalBinding": true },
         },
         "permissions": { "deny": SECRET_READS },
     })
@@ -103,6 +107,7 @@ mod tests {
         assert_eq!(sandbox["filesystem"]["denyWrite"], json!(["/t/round/worker-2"]));
         assert!(sandbox["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/.ssh")));
         assert!(sandbox["network"]["allowedDomains"].as_array().unwrap().contains(&json!("pypi.org")));
+        assert_eq!(sandbox["network"]["allowLocalBinding"], true, "it may run the app it built");
         assert!(value["permissions"]["deny"].as_array().unwrap().contains(&json!("Read(**/.env)")));
     }
 

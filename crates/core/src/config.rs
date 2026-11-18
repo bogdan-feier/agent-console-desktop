@@ -96,8 +96,11 @@ pub const CHECK_COMMANDS: &[&str] = &[
 /// Argument patterns are not airtight (`rm -fr` is not `rm -rf`), so treat this as
 /// a seatbelt, not a wall: it stops the careless case, not a determined one.
 /// The entries of [`DENIED_COMMANDS`] the sandbox makes unnecessary: with "any
-/// command" on, deleting is confined to the agent's own folder by the operating system.
-const SANDBOX_CONFINES: &[&str] = &["Bash(rm -rf *)", "Bash(rm -fr *)", "Bash(rm -r *)"];
+/// command" on, the operating system confines deleting to the agent's own folder,
+/// and the network to the package registries and this machine. So an agent can
+/// start the app it built and call it with curl, and still send nothing anywhere else.
+const SANDBOX_CONFINES: &[&str] =
+    &["Bash(rm -rf *)", "Bash(rm -fr *)", "Bash(rm -r *)", "Bash(curl *)", "Bash(wget *)"];
 
 pub const DENIED_COMMANDS: &[&str] = &[
     "Bash(sudo *)",
@@ -1014,6 +1017,9 @@ mod tests {
         // Any command runs in the sandbox, which confines deleting to the agent's folder.
         assert!(any.sandboxed);
         assert!(!any.denied.contains(&"Bash(rm -rf *)".to_string()));
+        // ...and the network to the registries and this machine, so it may call its own app.
+        assert!(!any.denied.contains(&"Bash(curl *)".to_string()));
+        assert!(any.denied.contains(&"Bash(ssh *)".to_string()), "still never another machine");
         assert!(reviewer(&settings).sandboxed);
         for spec in [dispatcher(&settings), planner(&settings), resolver(&settings)] {
             assert!(!spec.sandboxed, "{} runs no shell", spec.id);
@@ -1022,6 +1028,7 @@ mod tests {
         let listed = worker(&Settings::default(), 1);
         assert!(!listed.sandboxed);
         assert!(listed.denied.contains(&"Bash(rm -rf *)".to_string()));
+        assert!(listed.denied.contains(&"Bash(curl *)".to_string()), "no sandbox to confine it");
     }
 
     #[test]

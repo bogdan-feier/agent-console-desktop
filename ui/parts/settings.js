@@ -194,17 +194,6 @@ async function saveSettings() {
   }
 }
 
-/// Add one command to the allowed list and save, without opening the window.
-/// Used by the "Allow this command" button on a refused step.
-export async function allowCommand(command) {
-  const values = { ...app.settings, allowed_commands: [...app.settings.allowed_commands, command] };
-  app.settings = await invoke("save_settings", {
-    settings: values,
-    projectDir: app.folder || null,
-    ownSettings: Boolean(app.settings.own),
-  });
-}
-
 /// Offer the commands this kind of project usually needs, and its check command.
 /// They go into the boxes, not into the settings: saving is still a decision.
 async function suggestCommands() {

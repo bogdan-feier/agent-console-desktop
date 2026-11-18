@@ -4,7 +4,7 @@
 import { button, clearProblem, el, showProblem } from "./dom.js";
 import { lockPlans, refreshControls } from "./controls.js";
 import { render, rich } from "./markdown.js";
-import { app } from "./state.js";
+import { agents, app } from "./state.js";
 import { invoke } from "./tauri.js";
 import { addToThread, addToTurn, thread } from "./turns.js";
 import { plural } from "./words.js";
@@ -214,6 +214,52 @@ export function showReview(agent, event) {
   box.scrollIntoView({ block: "nearest" });
 }
 
+/// Add one command to the allowed list and save, without opening the window.
+/// Used by the Allow buttons on a refused step and on the review.
+export async function allowCommand(command) {
+  const values = { ...app.settings, allowed_commands: [...app.settings.allowed_commands, command] };
+  app.settings = await invoke("save_settings", {
+    settings: values,
+    projectDir: app.folder || null,
+    ownSettings: Boolean(app.settings.own),
+  });
+}
+
+/// Whether allowing a command could make any difference. With "any command" on, the
+/// allowed list is not used: what is still refused is on the app's own never-allow
+/// list, which no setting lifts.
+export const allowingHelps = () => !app.settings.full_shell;
+
+/// What the worker of `task` was refused in its latest session. A finding that
+/// needs one of these comes back unfixed however often it is sent back, so the
+/// review says so and offers to allow them first.
+function refusals(task) {
+  const refused = [...(agents["worker-" + task]?.refused ?? [])];
+  if (!refused.length) return null;
+  const line = el("p", "hint refusals");
+  if (!allowingHelps()) {
+    line.append("Worker " + task + " was refused ",
+      ...refused.flatMap((rule, index) => [index ? ", " : "", el("code", "", rule)]),
+      ", which the app never allows. Sending back will not fix a finding that needs it: do that part yourself.");
+    return line;
+  }
+  line.append("Worker " + task + " was refused these commands. If a finding needs one, allow it before sending back: ");
+  for (const rule of refused) {
+    const allow = button("Allow \"" + rule + "\"", async () => {
+      allow.disabled = true;
+      try {
+        await allowCommand(rule);
+        agents["worker-" + task].refused.delete(rule);
+        allow.replaceWith(el("span", "allowed", "Allowed " + rule));
+      } catch (error) {
+        allow.replaceWith(el("span", "problem", String(error)));
+      }
+    }, "allow");
+    line.append(allow, " ");
+  }
+  return line;
+}
+
 /// One group per task, each with a button that sends it back to that task's worker.
 function findings(mustFix) {
   const box = el("div", "findings");
@@ -228,6 +274,10 @@ function findings(mustFix) {
     const list = el("ul");
     for (const finding of mustFix.filter((one) => one.task === task)) list.append(rich("li", finding.issue));
     group.append(list);
+    if (!unassigned) {
+      const refused = refusals(task);
+      if (refused) group.append(refused);
+    }
 
     const sendBack = button(unassigned ? "Give these to a worker" : "Send back to Worker " + task, () => {
       clearProblem();

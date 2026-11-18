@@ -13,13 +13,13 @@ import { wireChanges } from "./parts/changes.js";
 import {
   mode, refreshControls, refreshPlaceholder, refreshStages, setRound, setRunState,
 } from "./parts/controls.js";
-import { showChecks, showPlan, showReview } from "./parts/decisions.js";
+import { allowCommand, allowingHelps, showChecks, showPlan, showReview } from "./parts/decisions.js";
 import { $, button, clearProblem, el, forget, recall, remember, showProblem } from "./parts/dom.js";
 import { wireHistory } from "./parts/history.js";
 import { rich } from "./parts/markdown.js";
 import { refreshPrompts, wirePrompts } from "./parts/prompts.js";
 import { chooseFolder, refreshWelcome, setFolder } from "./parts/project.js";
-import { allowCommand, buildSettingsForm, wireSettings } from "./parts/settings.js";
+import { buildSettingsForm, wireSettings } from "./parts/settings.js";
 import { agents, app, isAtRest, modelLabel } from "./parts/state.js";
 import { canNotify, invoke, listen } from "./parts/tauri.js";
 import {
@@ -99,6 +99,8 @@ function handle(event) {
     case "agent_status":
       setStatus(agent, event.status);
       if (event.status === "running") {
+        // What the review offers to allow is what this session was refused.
+        agent.refused = new Set();
         if (agent.turn) endTurn(agent, "done");
         startTurn(agent, true);
         if (agent.card) agent.card.model.textContent = modelLabel(agent.role);
@@ -119,7 +121,9 @@ function handle(event) {
       addStep(agent, node, event.name + " " + event.detail);
       break;
     }
-    case "tool_error": addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
+    case "tool_error":
+      if (event.allow_rule) (agent.refused ??= new Set()).add(event.allow_rule);
+      addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
     case "notice": place(agent, el("div", "note", event.text)); break;
     case "error": place(agent, problemBox(event)); break;
     case "result":
@@ -160,6 +164,10 @@ function problemBox(event) {
 function refusedStep(agent, event) {
   const node = el("li", "step failed", "Refused or failed: " + event.detail);
   if (!event.allow_rule) return node;
+  if (!allowingHelps()) {
+    node.append(el("span", "hint", " The app never allows this, even with \"any command\" on."));
+    return node;
+  }
 
   const allow = button('Allow "' + event.allow_rule + '"', async () => {
     allow.disabled = true;

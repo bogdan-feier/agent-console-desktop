@@ -198,6 +198,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
 .finding-group .goes-to { font-size: 13px; color: var(--build); font-weight: 600; }
 .finding-group ul, .decision ul { margin: 0; padding-left: 18px; }
 .finding-group button { justify-self: start; }
+.finding-group .refusals button { margin: 2px 4px 2px 0; }
 
 /* The open round's decision */
 .round-bar {
@@ -341,7 +342,7 @@ button.save-prompt { border-style: dashed; border-radius: 999px; padding: 3px 10
 
 /* A refused step offers to allow the command */
 button.allow { padding: 1px 8px; font-size: 12px; border-radius: 999px; }
-.step .allowed { color: var(--good); font-size: 12px; }
+.step .allowed, .refusals .allowed { color: var(--good); font-size: 12px; }
 /* The app fixed it: say so in the colour of good news, not of the error it sits in. */
 .problem .allowed { color: var(--good); display: block; margin-top: 6px; }
 .problem .hint { margin: 4px 0 8px; }

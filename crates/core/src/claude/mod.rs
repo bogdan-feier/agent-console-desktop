@@ -18,7 +18,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::config::{self, AgentSpec, AuthMode};
+use crate::config::{self, AgentSpec, AuthMode, DENIED_COMMANDS};
 use crate::event::EventKind;
 use crate::process::Group;
 use crate::run::Run;
@@ -321,10 +321,19 @@ fn tool_error_detail(result_text: &str, command: Option<&str>) -> String {
 /// y`) it is the first command that does real work: `cd`, `export` and variables set
 /// for one command are only setting the scene.
 fn allow_rule(command: &str) -> Option<String> {
-    let part = command
+    let parts = command
         .split(['\n', ';', '&', '|'])
         .map(str::trim)
-        .find(|part| !part.is_empty() && !is_scene_setting(part))?;
+        .filter(|part| !part.is_empty() && !is_scene_setting(part));
+    let rules: Vec<Option<String>> = parts.map(part_rule).collect();
+    // A chain is refused whole for one part on the never-allow list; name that one,
+    // or "uv run pytest; git remote -v" would blame uv.
+    let never = |rule: &String| DENIED_COMMANDS.contains(&format!("Bash({rule})").as_str());
+    rules.iter().flatten().find(|rule| never(rule)).cloned().or(rules.into_iter().next()?)
+}
+
+/// The rule for one command of a chain. `None` when there is none worth offering.
+fn part_rule(part: &str) -> Option<String> {
     // `cat > notes.txt` writes a file: a rule for `cat` would not be about that.
     if part.contains(['>', '<', '`', '$']) {
         return None;
@@ -399,6 +408,8 @@ mod tests {
         assert_eq!(rule("pwd && ls -la && uv --version"), Some("ls *".into()));
         // Writing a file through the shell is not what a rule for `cat` would mean.
         assert_eq!(rule("cat > domain/scoreboard.py <<'EOF'"), None);
+        // A chain refused for its one never-allowed part is named after that part.
+        assert_eq!(rule("uv run pytest -q; uv run pytest; git remote -v"), Some("git remote *".into()));
     }
 
     #[test]

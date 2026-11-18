@@ -198,6 +198,9 @@ impl AgentRunner for ClaudeRunner {
                     for block in message.blocks() {
                         if let Block::ToolResult { content, is_error: Some(true) } = block {
                             let text = tool_result_text(&content);
+                            if is_malformed_call(&text) {
+                                continue;
+                            }
                             let allow_rule = refused_command(&text, last_command.as_deref());
                             let detail = tool_error_detail(&text, last_command.as_deref());
                             run.emit(Some(agent), EventKind::ToolError { detail, allow_rule });
@@ -274,6 +277,12 @@ fn describe_tool_call(name: &str, input: &Value) -> String {
     shorten(input.get(field).and_then(Value::as_str).unwrap_or_default())
 }
 
+/// Whether a tool call failed only because the model got its arguments wrong. It
+/// retries on its own straight away, so a red line for it is noise.
+fn is_malformed_call(result_text: &str) -> bool {
+    result_text.contains("<tool_use_error>InputValidationError")
+}
+
 /// Whether a tool result says the call was refused for want of permission, rather
 /// than run and failed.
 fn is_refusal(result_text: &str) -> bool {
@@ -348,6 +357,16 @@ mod tests {
         assert_eq!(refused_command(refused, None), None);
         // A rule we could not store safely is not offered at all.
         assert_eq!(refused_command(refused, Some("foo(bar)")), None);
+    }
+
+    #[test]
+    fn only_malformed_calls_are_left_off_the_cards() {
+        let malformed = "<tool_use_error>InputValidationError: Read failed due to the following issues:\n\
+                         The required parameter `file_path` is missing</tool_use_error>";
+        assert!(is_malformed_call(malformed));
+        // Still shown: these say something about the setup, not a typo the model fixes.
+        assert!(!is_malformed_call("<tool_use_error>Unknown skill: dev-conventions:nope</tool_use_error>"));
+        assert!(!is_malformed_call("Permission to use Bash has been denied."));
     }
 
     #[test]

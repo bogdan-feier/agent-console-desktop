@@ -3,7 +3,7 @@
 
 import { button, clearProblem, el, showProblem } from "./dom.js";
 import { lockPlans, refreshControls } from "./controls.js";
-import { rich } from "./markdown.js";
+import { render, rich } from "./markdown.js";
 import { app } from "./state.js";
 import { invoke } from "./tauri.js";
 import { addToThread, addToTurn, thread } from "./turns.js";
@@ -48,7 +48,7 @@ function taskFields(task, number) {
   const card = el("div", "task");
   card.append(el("div", "goes-to", "Task " + number + ", for Worker " + number));
 
-  const title = el("input");
+  const title = el("input", "task-name");
   title.type = "text";
   title.value = task.title;
   title.dataset.field = "title";
@@ -59,11 +59,11 @@ function taskFields(task, number) {
   instructions.dataset.field = "instructions";
   instructions.setAttribute("aria-label", "Task " + number + " instructions");
 
-  const files = el("input", "files");
-  files.type = "text";
-  files.value = task.files.join(", ");
+  // One file per line, so the whole list is visible rather than scrolled sideways.
+  const files = el("textarea", "files");
+  files.value = task.files.join("\n");
   files.dataset.field = "files";
-  files.setAttribute("aria-label", "Files for task " + number + ", separated by commas");
+  files.setAttribute("aria-label", "Files for task " + number + ", one per line");
 
   // The planner's call that this task needs judgment. It runs on Sonnet when the
   // workers are on Haiku; any other worker model is left as Settings has it.
@@ -75,7 +75,10 @@ function taskFields(task, number) {
   hardSwitch.append(hard, el("span", null, "Needs judgment "),
     el("span", "hint", "(runs on Sonnet instead of Haiku)"));
 
-  card.append(title, instructions, files, hardSwitch);
+  card.append(title, el("div", "field-label", "Instructions"), readable(instructions), instructions,
+    el("div", "field-label", "Files it may change"), files, hardSwitch);
+  growToFit(instructions);
+  growToFit(files);
 
   // What the planner read, passed on so the worker does not read it again. Folded
   // away: it is usually right and rarely interesting, but when a worker goes wrong
@@ -89,15 +92,59 @@ function taskFields(task, number) {
     text.setAttribute("aria-label", "What the planner found for task " + number);
     found.append(text);
     card.append(found);
+    // A closed <details> has no height to measure, so size it when opened.
+    found.addEventListener("toggle", () => fit(text));
+    growToFit(text);
   }
   return card;
+}
+
+/// The instructions shown as formatted Markdown; clicking them swaps in the
+/// textarea to edit, and leaving the textarea shows the formatted version again.
+function readable(area) {
+  const view = el("div", "say task-text");
+  view.title = "Click to edit";
+  view.tabIndex = 0;
+  const show = () => {
+    view.innerHTML = render(area.value);
+    view.hidden = false;
+    area.hidden = true;
+  };
+  const edit = () => {
+    view.hidden = true;
+    area.hidden = false;
+    fit(area);
+    area.focus();
+  };
+  view.addEventListener("click", edit);
+  view.addEventListener("keydown", (key) => {
+    if (key.key === "Enter") {
+      key.preventDefault();
+      edit();
+    }
+  });
+  area.addEventListener("blur", show);
+  show();
+  return view;
+}
+
+/// A textarea as tall as its text, so a task reads in full without scrolling.
+function fit(area) {
+  area.style.height = "auto";
+  area.style.height = area.scrollHeight + 2 + "px";
+}
+
+function growToFit(area) {
+  area.addEventListener("input", () => fit(area));
+  // Not measurable until the card is on the page.
+  requestAnimationFrame(() => fit(area));
 }
 
 async function approvePlan(box) {
   const tasks = [...box.querySelectorAll(".task")].map((card) => ({
     title: card.querySelector("[data-field=title]").value,
     instructions: card.querySelector("[data-field=instructions]").value,
-    files: card.querySelector("[data-field=files]").value.split(",").map((file) => file.trim()).filter(Boolean),
+    files: card.querySelector("[data-field=files]").value.split(/[\n,]/).map((file) => file.trim()).filter(Boolean),
     context: card.querySelector("[data-field=context]")?.value ?? "",
     hard: card.querySelector("[data-field=hard]").checked,
   }));

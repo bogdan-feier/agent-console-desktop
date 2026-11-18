@@ -124,8 +124,8 @@ impl Workspace {
             .map_err(|_| "The project has no commits yet. Make a first commit so the workers have something to start from.".to_string())?
             .trim()
             .to_string();
-        let changes = git(project_dir, &["status", "--porcelain"]).await?;
-        if !changes.trim().is_empty() {
+        let changes = real_changes(&git(project_dir, &["status", "--porcelain"]).await?);
+        if !changes.is_empty() {
             return Err(dirty_message(&changes));
         }
         // Forget worktrees whose folders no longer exist (from an app that was
@@ -382,22 +382,24 @@ impl Workspace {
     /// Put the reviewed changes into the project folder as staged, uncommitted
     /// changes. Returns the files that changed.
     ///
-    /// The project folder must have nothing uncommitted in it: the merge below writes
-    /// over the files it touches, and anything not committed would be gone for good.
+    /// The project folder must have nothing uncommitted in it, apart from an editor's
+    /// own files: the merge below writes over the files it touches, and anything not
+    /// committed would be gone for good.
     /// The project having moved on since the workers started is fine, though. Git works
     /// out the common ancestor itself, so the merge still means the right thing; it
     /// only fails if those new commits touched the same lines, and because everything
     /// is committed by this point, backing out of that loses nothing.
     pub async fn apply(&self) -> Result<Vec<String>, String> {
         let project = &self.project_dir;
-        let dirty = git(project, &["status", "--porcelain"]).await?;
-        if !dirty.trim().is_empty() {
+        let dirty = real_changes(&git(project, &["status", "--porcelain"]).await?);
+        if !dirty.is_empty() {
             return Err(dirty_message(&dirty));
         }
 
         if let Err(clash) = git(project, &["merge", "--squash", "-q", &self.review_branch()]).await {
-            // Leave the folder as it was. Safe: there was nothing uncommitted.
-            let _ = git(project, &["reset", "--hard", "-q", "HEAD"]).await;
+            // Leave the folder as it was. `--merge` undoes only what the merge did, so
+            // an editor's uncommitted files (the one thing allowed above) are kept.
+            let _ = git(project, &["reset", "--merge", "-q", "HEAD"]).await;
             return Err(format!(
                 "Your project gained commits since the workers started, and they changed the same \
                  lines as this round, so the two could not be put together ({}). Your project is \
@@ -453,6 +455,34 @@ fn why(problem: String) -> String {
     }
 }
 
+/// Files an editor or the system changes by itself whenever the project is open.
+/// A round never touches them, so leaving them uncommitted stops nothing.
+const EDITOR_FILES: &[&str] = &[".idea/", ".vscode/", ".fleet/", ".DS_Store"];
+/// [`EDITOR_FILES`] as git pathspecs that leave them out of a commit.
+const EDITOR_PATHSPECS: &[&str] = &[
+    ":(exclude,glob)**/.idea/**",
+    ":(exclude,glob)**/.vscode/**",
+    ":(exclude,glob)**/.fleet/**",
+    ":(exclude,glob)**/.DS_Store",
+];
+
+/// The lines of `git status --porcelain` that are the user's own work, leaving out
+/// [`EDITOR_FILES`]. A rename ("R  old -> new") counts only if neither side is one.
+fn real_changes(porcelain: &str) -> String {
+    let is_editor_file = |path: &str| {
+        let path = path.trim().trim_matches('"');
+        EDITOR_FILES.iter().any(|editor| match editor.strip_suffix('/') {
+            Some(folder) => path.starts_with(editor) || path.contains(&format!("/{folder}/")),
+            None => path == *editor || path.ends_with(&format!("/{editor}")),
+        })
+    };
+    porcelain
+        .lines()
+        .filter(|line| line.len() > 3 && !line[3..].split(" -> ").all(is_editor_file))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The one sentence both dirty-folder checks use. `porcelain` is `git status --porcelain`.
 ///
 /// The window watches for this wording and offers to commit the files itself, so the
@@ -480,20 +510,22 @@ pub async fn recent_subjects(project_dir: &Path) -> Vec<String> {
 /// terminal. It is their commit, with their git identity and their hooks, so if they
 /// have no identity set git refuses and the reason is passed back for the window.
 pub async fn commit_project(project_dir: &Path, message: &str) -> Result<usize, String> {
-    let porcelain = git(project_dir, &["status", "--porcelain"]).await?;
-    let files = porcelain.lines().filter(|line| !line.trim().is_empty()).count();
+    let porcelain = real_changes(&git(project_dir, &["status", "--porcelain"]).await?);
+    let files = porcelain.lines().count();
     if files == 0 {
         return Ok(0);
     }
-    git(project_dir, &["add", "-A"]).await.map_err(why)?;
+    // Never an editor's own files: they are not the user's work, and once in git
+    // every open editor makes the project look changed.
+    git(project_dir, &[&["add", "-A", "--", "."], EDITOR_PATHSPECS].concat()).await.map_err(why)?;
     git(project_dir, &["commit", "-q", "-m", message]).await.map_err(why)?;
     Ok(files)
 }
 
 /// What is uncommitted in the project folder right now, if anything.
 pub async fn uncommitted(project_dir: &Path) -> Option<String> {
-    let porcelain = git(project_dir, &["status", "--porcelain"]).await.ok()?;
-    if porcelain.trim().is_empty() {
+    let porcelain = real_changes(&git(project_dir, &["status", "--porcelain"]).await.ok()?);
+    if porcelain.is_empty() {
         return None;
     }
     Some(dirty_message(&porcelain))
@@ -952,6 +984,46 @@ mod tests {
         workspace.remove().await;
     }
 
+    #[test]
+    fn an_editor_s_own_files_are_not_the_user_s_work() {
+        let status = " M .idea/modules.xml\nRM .idea/old.iml -> .idea/new.iml\n?? .DS_Store\n\
+                      ?? web/.vscode/settings.json\n M src/app.py\n?? notes.md\n";
+        assert_eq!(real_changes(status), " M src/app.py\n?? notes.md");
+        assert_eq!(real_changes(" M .idea/workspace.xml\n"), "");
+        // A file merely named like an editor folder is real work.
+        assert_eq!(real_changes("?? docs/idea.md\n"), "?? docs/idea.md");
+    }
+
+    #[tokio::test]
+    async fn an_open_editor_neither_blocks_a_round_nor_loses_its_files() {
+        let project = project();
+        fs::create_dir(project.path().join(".idea")).unwrap();
+        fs::write(project.path().join(".idea/modules.xml"), "v1\n").unwrap();
+        run_git(project.path(), &["add", "."]);
+        run_git(project.path(), &["commit", "-qm", "tracked editor settings"]);
+        // The editor rewrites its settings while the round runs.
+        fs::write(project.path().join(".idea/modules.xml"), "v2\n").unwrap();
+        fs::write(project.path().join(".DS_Store"), "x").unwrap();
+
+        let workspace = Workspace::create(project.path(), &run_id(), 1, 1).await.unwrap();
+        fs::write(workspace.worker_dir(1).join("a.py"), "x = 2\n").unwrap();
+        workspace.commit_worker(1, "t", &files(&["a.py"])).await.unwrap();
+        workspace.merge_into_review(&[1]).await.unwrap();
+
+        // A clash with new commits is undone without touching the editor's files...
+        fs::write(project.path().join("a.py"), "my own line\n").unwrap();
+        run_git(project.path(), &["commit", "-qm", "mine", "a.py"]);
+        assert!(workspace.apply().await.unwrap_err().contains("could not be put together"));
+        assert_eq!(fs::read_to_string(project.path().join(".idea/modules.xml")).unwrap(), "v2\n");
+
+        // ...and a clean apply stages only the round, leaving them as they were.
+        run_git(project.path(), &["reset", "-q", "--hard", "HEAD~1"]);
+        fs::write(project.path().join(".idea/modules.xml"), "v2\n").unwrap();
+        assert_eq!(workspace.apply().await.unwrap(), ["a.py"]);
+        assert_eq!(fs::read_to_string(project.path().join(".idea/modules.xml")).unwrap(), "v2\n");
+        workspace.remove().await;
+    }
+
     #[tokio::test]
     async fn a_commit_says_exactly_what_it_was_given_and_nothing_else() {
         let project = project();
@@ -1014,5 +1086,20 @@ mod tests {
 
         assert!(uncommitted(project.path()).await.is_none());
         assert_eq!(commit_project(project.path(), "wip").await.unwrap(), 0, "nothing left to commit");
+    }
+
+    #[tokio::test]
+    async fn the_app_s_own_commit_leaves_an_editor_s_files_out() {
+        let project = project();
+        fs::create_dir(project.path().join(".idea")).unwrap();
+        fs::write(project.path().join(".idea/modules.xml"), "pycharm\n").unwrap();
+        fs::write(project.path().join(".DS_Store"), "x").unwrap();
+        assert!(uncommitted(project.path()).await.is_none(), "an open editor is not a change");
+        assert_eq!(commit_project(project.path(), "wip").await.unwrap(), 0);
+
+        fs::write(project.path().join("a.py"), "changed\n").unwrap();
+        assert_eq!(commit_project(project.path(), "wip").await.unwrap(), 1);
+        let committed = run_git(project.path(), &["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(committed.trim(), "a.py", "only the user's own work");
     }
 }

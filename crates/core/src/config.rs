@@ -204,7 +204,10 @@ Rules for the plan:
   instructions so the worker loads it too. The project's own files outrank a skill.
 
 Work economically: find things with Grep and Glob before reading, read only the parts of
-files you need, and do not re-read files you have already seen in this session.";
+files you need, and do not re-read files you have already seen in this session. When the
+user already names the files and says what to change in each, read only those places and
+write the plan: do not research libraries or the rest of the project, because the worker
+runs the tests and the reviewer checks the result.";
 
 const WORKER_INSTRUCTIONS: &str = "\
 You are a worker in a small team. You implement exactly one task from an approved plan, in

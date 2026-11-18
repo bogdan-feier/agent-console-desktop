@@ -72,6 +72,9 @@ async function offerCheckCommand(approve) {
   approve.before(line);
 }
 
+/// More files than this and the list starts folded.
+const FILES_SHOWN_OPEN = 8;
+
 /// One editable task: title, instructions, and the files its worker may touch.
 function taskFields(task, number) {
   const card = el("div", "task");
@@ -104,8 +107,14 @@ function taskFields(task, number) {
   hardSwitch.append(hard, el("span", null, "Needs judgment "),
     el("span", "hint", "(runs on Sonnet instead of Haiku)"));
 
+  // A long list is folded, so the instructions above it stay the first thing you read.
+  const fileList = el("details", "file-list");
+  fileList.open = task.files.length <= FILES_SHOWN_OPEN;
+  fileList.append(el("summary", "field-label", "Files it may change (" + task.files.length + ")"), files);
+  fileList.addEventListener("toggle", () => fit(files));
+
   card.append(title, el("div", "field-label", "Instructions"), readable(instructions), instructions,
-    el("div", "field-label", "Files it may change"), files, hardSwitch);
+    fileList, hardSwitch);
   growToFit(instructions);
   growToFit(files);
 

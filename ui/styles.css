@@ -188,6 +188,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
 .task .task-text { max-width: none; background: var(--sunken); border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; cursor: text; }
 .task [hidden] { display: none; }
 .task .task-text:hover { border-color: var(--muted); }
+.task .file-list summary { cursor: pointer; margin-bottom: 4px; }
 .task .files { font-family: var(--mono); font-size: 12.5px; min-height: 0; overflow-wrap: anywhere; }
 .check-offer button { padding: 2px 10px; margin-left: 4px; }
 .verdict-approve h3 { color: var(--good); }

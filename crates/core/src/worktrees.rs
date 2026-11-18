@@ -435,6 +435,9 @@ impl Workspace {
 
     /// Delete this round's worktrees and branches. Safe to call more than once.
     pub async fn remove(&self) {
+        // Anything an agent left running in its copy (the app it built, started to
+        // try it) would keep running from a deleted folder, holding its port.
+        crate::process::stop_processes_in(&self.root).await;
         for part in self.parts() {
             let dir = path_arg(&self.root.join(&part));
             let _ = git(&self.project_dir, &["worktree", "remove", "--force", &dir]).await;

@@ -148,8 +148,16 @@ impl Orchestrator {
         let previous = run.state();
         run.set_state(RunState::Planning);
         let settings = self.settings();
-        let spec = config::planner(&settings);
         let request = request.map(str::trim).filter(|text| !text.is_empty());
+        let mut spec = config::planner(&settings);
+        if let Some(text) = request {
+            let chosen = spec.effort;
+            spec = config::for_request(spec, text);
+            if spec.effort != chosen {
+                let note = "Planning at low effort, because your request names the files to change.";
+                run.emit(Some(PLANNER_ID), EventKind::Notice { text: note.to_string() });
+            }
+        }
         if let Some(text) = request {
             run.emit(Some(PLANNER_ID), EventKind::UserMessage { text: text.to_string() });
         }

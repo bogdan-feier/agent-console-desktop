@@ -369,6 +369,41 @@ pub fn for_task(mut spec: AgentSpec, task: &Task) -> AgentSpec {
     spec
 }
 
+/// File types a request can name without a folder ("fix main.rs"). With a folder,
+/// any extension counts.
+const CODE_EXTENSIONS: &[&str] = &[
+    "rs", "py", "js", "ts", "tsx", "jsx", "html", "css", "md", "json", "toml", "yaml", "yml", "go", "java",
+    "kt", "swift", "c", "h", "cpp", "rb", "sh", "sql",
+];
+
+/// Whether `word` looks like a file path: `src/app.py`, `main.rs:55`, `` `ui/app.js` ``.
+fn is_file_path(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| "`'\"()[]{},;:.".contains(c));
+    // "ai.py:55" names the same file as "ai.py".
+    let word = word.split(':').next().unwrap_or_default();
+    if word.starts_with("http") {
+        return false;
+    }
+    let name = word.rsplit('/').next().unwrap_or_default();
+    let Some((stem, extension)) = name.rsplit_once('.') else { return false };
+    let plausible = !stem.is_empty()
+        && (1..=5).contains(&extension.len())
+        && extension.chars().all(|c| c.is_ascii_alphanumeric());
+    plausible && (word.contains('/') || CODE_EXTENSIONS.contains(&extension))
+}
+
+/// The planner for one request. A request that names the files it changes needs
+/// reading, not working out, so the planner thinks at low effort: most of its
+/// usage is thinking, not the plan it writes.
+// ponytail: naming a file is the whole test, so "rewrite main.rs from scratch" also
+// gets low effort; look at the request's size too if plans like that come out thin.
+pub fn for_request(mut spec: AgentSpec, request: &str) -> AgentSpec {
+    if request.split_whitespace().any(is_file_path) {
+        spec.effort = Some(Effort::Low);
+    }
+    spec
+}
+
 /// What the planner returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
@@ -790,6 +825,19 @@ mod tests {
 
     fn defaults() -> Settings {
         Settings::default()
+    }
+
+    #[test]
+    fn a_request_that_names_its_files_is_planned_at_low_effort() {
+        let planned = |request: &str| for_request(planner(&defaults()), request).effort;
+        let chosen = planner(&defaults()).effort;
+        // The requests from real runs: exact fixes name their files, new features do not.
+        assert_eq!(planned("1. src/tic_tac_toe/domain/ai.py:55 — replace @lru_cache"), Some(Effort::Low));
+        assert_eq!(planned("Change only `src/tic_tac_toe/static/index.html`."), Some(Effort::Low));
+        assert_eq!(planned("Fix the typo in main.rs"), Some(Effort::Low));
+        assert_eq!(planned("Add a scoreboard, following the existing layered structure."), chosen);
+        // Look like paths, but are not files.
+        assert_eq!(planned("Use defaults, e.g. 3.5 or v2.0, see https://example.com/a.html"), chosen);
     }
 
     #[test]

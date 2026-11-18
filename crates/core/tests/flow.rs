@@ -64,6 +64,23 @@ async fn a_plan_with_no_tasks_is_an_answer_not_a_failure() {
 }
 
 #[tokio::test]
+async fn the_planner_says_when_it_plans_at_low_effort() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+
+    supervised(
+        run.clone(),
+        instant_script().plan(&run, Some("Fix the off-by-one in src/textstats/stats.py")),
+    )
+    .await;
+
+    let notes: Vec<String> =
+        collected.of_type("notice").iter().map(|note| note["text"].as_str().unwrap().to_string()).collect();
+    assert!(notes.iter().any(|note| note.contains("low effort")), "{notes:?}");
+    assert_eq!(run.state(), RunState::AwaitingApproval, "it still plans");
+}
+
+#[tokio::test]
 async fn dispatcher_passes_ideas_to_the_planner_to_talk_through() {
     let collected = Collected::default();
     let run = new_run(".", &collected);

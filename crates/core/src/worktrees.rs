@@ -141,6 +141,11 @@ impl Workspace {
             branch_prefix: format!("agent-console/{name}"),
             workers,
         };
+        // Copies already at this round's name belong to a round the run never
+        // recorded: the app closed while it was being built. Clear them first.
+        if workspace.root.exists() {
+            workspace.remove().await;
+        }
         for part in workspace.parts() {
             let (branch, dir) = (workspace.branch(&part), workspace.root.join(&part));
             let created =
@@ -438,10 +443,18 @@ impl Workspace {
         // Anything an agent left running in its copy (the app it built, started to
         // try it) would keep running from a deleted folder, holding its port.
         crate::process::stop_processes_in(&self.root).await;
-        for part in self.parts() {
-            let dir = path_arg(&self.root.join(&part));
-            let _ = git(&self.project_dir, &["worktree", "remove", "--force", &dir]).await;
-            let _ = git(&self.project_dir, &["branch", "-q", "-D", &self.branch(&part)]).await;
+        // Every copy and branch under this round's name, not only the parts this
+        // value knows of: a leftover round may have had more workers.
+        if let Ok(entries) = std::fs::read_dir(&self.root) {
+            for entry in entries.flatten() {
+                let dir = path_arg(&entry.path());
+                let _ = git(&self.project_dir, &["worktree", "remove", "--force", &dir]).await;
+            }
+        }
+        let prefix = format!("refs/heads/{}/", self.branch_prefix);
+        let branches = git(&self.project_dir, &["for-each-ref", "--format=%(refname:short)", &prefix]).await;
+        for branch in branches.unwrap_or_default().lines().filter(|line| !line.is_empty()) {
+            let _ = git(&self.project_dir, &["branch", "-q", "-D", branch]).await;
         }
         let _ = tokio::fs::remove_dir_all(&self.root).await;
         let _ = git(&self.project_dir, &["worktree", "prune"]).await;
@@ -1025,6 +1038,25 @@ mod tests {
         assert_eq!(workspace.apply().await.unwrap(), ["a.py"]);
         assert_eq!(fs::read_to_string(project.path().join(".idea/modules.xml")).unwrap(), "v2\n");
         workspace.remove().await;
+    }
+
+    #[tokio::test]
+    async fn a_round_left_behind_by_a_closed_app_does_not_block_the_next() {
+        let project = project();
+        let id = run_id();
+        // The app closed mid-build: two workers' copies exist, but no round was kept.
+        let lost = Workspace::create(project.path(), &id, 1, 2).await.unwrap();
+        fs::write(lost.worker_dir(2).join("a.py"), "half done\n").unwrap();
+        drop(lost);
+
+        // Approving again opens the same round number, now with one worker.
+        let again = Workspace::create(project.path(), &id, 1, 1).await.unwrap();
+        assert_eq!(fs::read_to_string(again.worker_dir(1).join("a.py")).unwrap(), "x = 1\n");
+        assert!(!again.worker_dir(2).exists(), "the lost round's extra copy is gone");
+        let branches = run_git(project.path(), &["branch", "--list", "agent-console/*"]);
+        assert!(!branches.contains("worker-2"), "{branches}");
+        again.remove().await;
+        assert!(run_git(project.path(), &["branch", "--list", "agent-console/*"]).trim().is_empty());
     }
 
     #[tokio::test]

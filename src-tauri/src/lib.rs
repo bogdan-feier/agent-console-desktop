@@ -611,10 +611,25 @@ fn first_line(text: &str) -> String {
 }
 
 /// Forward every event of a run to the window, and save it when there is a store.
+///
+/// Where the run got to is saved when a phase ends, and also whenever a round opens
+/// or closes or the run moves to another stage: a round's copies exist from the
+/// moment it opens, and quitting mid-build must not lose track of them.
 fn window_sink(app: AppHandle, store: Option<Arc<RunStore>>) -> EventSink {
     Arc::new(move |run_id: &str, event: &Event| {
         if let Some(store) = &store {
             store.append(run_id, event);
+            if matches!(event.kind, EventKind::Round { .. } | EventKind::RunState { .. }) {
+                // In a task of its own: the run is locked while it hands out an
+                // event, and saving reads it.
+                let (app, store, id) = (app.clone(), store.clone(), run_id.to_string());
+                tauri::async_runtime::spawn(async move {
+                    let run = app.state::<AppState>().runs().get(&id).map(|active| active.run.clone());
+                    if let Some(run) = run {
+                        store.save_state(&run);
+                    }
+                });
+            }
         }
         let _ = app.emit(RUN_EVENT, RunEvent { run_id, event });
     })

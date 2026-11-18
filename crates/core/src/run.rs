@@ -220,7 +220,7 @@ impl Run {
             last_reviewed: round.last_reviewed,
             quick: round.quick,
         });
-        Arc::new(Run {
+        let run = Arc::new(Run {
             id,
             project_dir: project_dir.into(),
             request: request.into(),
@@ -237,7 +237,53 @@ impl Run {
                 rounds_started: saved.rounds_started,
                 stop_signal: None,
             }),
-        })
+        });
+        run.close_what_was_interrupted();
+        run
+    }
+
+    /// Bring the run's events in line with what is true after a restart.
+    ///
+    /// The log stops wherever the app did. An agent it last showed as running is no
+    /// longer running, and a round the log shows open was not kept if the app closed
+    /// before saving it. Left alone, the window would replay the log and show a
+    /// worker working on nothing, with no way to stop it. So say how things stand.
+    fn close_what_was_interrupted(&self) {
+        let (still_running, logged_state, logged_round_open, state, round_open) = {
+            let inner = self.lock();
+            let mut last_status: HashMap<&str, AgentStatus> = HashMap::new();
+            let (mut logged_state, mut logged_round_open) = (None, false);
+            for event in &inner.events {
+                match (&event.agent, &event.kind) {
+                    (Some(agent), EventKind::AgentStatus { status }) => {
+                        last_status.insert(agent, *status);
+                    }
+                    (_, EventKind::RunState { state }) => logged_state = Some(*state),
+                    (_, EventKind::Round { open, .. }) => logged_round_open = *open,
+                    _ => {}
+                }
+            }
+            let mut running: Vec<String> = last_status
+                .into_iter()
+                .filter(|(_, status)| *status == AgentStatus::Running)
+                .map(|(agent, _)| agent.to_string())
+                .collect();
+            running.sort();
+            (running, logged_state, logged_round_open, inner.state, inner.round.is_some())
+        };
+        for agent in &still_running {
+            self.emit(Some(agent), EventKind::AgentStatus { status: AgentStatus::Stopped });
+        }
+        if logged_round_open && !round_open {
+            let text = "The app closed before this round was saved, so its work was lost. \
+                        Approve the plan again to start it over."
+                .to_string();
+            self.emit(None, EventKind::Notice { text });
+            self.emit(None, EventKind::Round { open: false, quick: false, tasks: Vec::new() });
+        }
+        if logged_state.is_some_and(|logged| logged != state) {
+            self.emit(None, EventKind::RunState { state });
+        }
     }
 
     /// True when this run can still be worked on.
@@ -516,6 +562,60 @@ mod tests {
             context: String::new(),
             hard: false,
         }
+    }
+
+    #[test]
+    fn a_run_reopened_after_the_app_closed_mid_build_shows_nothing_still_running() {
+        // The log as it was when the app was quit: a round opened, a worker started.
+        let logged = [
+            (None, EventKind::RunState { state: RunState::AwaitingApproval }),
+            (None, EventKind::Round { open: true, quick: false, tasks: vec!["Add a button".into()] }),
+            (None, EventKind::RunState { state: RunState::Building }),
+            (Some("worker-1"), EventKind::AgentStatus { status: AgentStatus::Running }),
+            (Some("planner"), EventKind::AgentStatus { status: AgentStatus::Done }),
+        ];
+        let events = logged
+            .into_iter()
+            .enumerate()
+            .map(|(seq, (agent, kind))| Event { seq, agent: agent.map(str::to_string), kind })
+            .collect();
+        // What was saved last: the plan waiting for approval, before the round opened.
+        let saved = Snapshot {
+            state: RunState::AwaitingApproval,
+            tasks: vec![task("Add a button")],
+            plan_summary: String::new(),
+            sessions: HashMap::new(),
+            rounds_started: 8,
+            round: None,
+        };
+        let run = Run::from_saved(
+            "r".into(),
+            "/p",
+            "req",
+            events,
+            Some(saved),
+            None,
+            Arc::new(|_: &str, _: &Event| {}),
+        );
+
+        let added: Vec<EventKind> = run.events().into_iter().skip(5).map(|event| event.kind).collect();
+        assert!(matches!(added[0], EventKind::AgentStatus { status: AgentStatus::Stopped }), "{added:?}");
+        assert!(added.iter().any(|kind| matches!(kind, EventKind::Round { open: false, .. })));
+        assert!(matches!(added.last(), Some(EventKind::RunState { state: RunState::AwaitingApproval })));
+        assert_eq!(run.events()[5].agent.as_deref(), Some("worker-1"), "only the agent that was running");
+        assert_eq!(run.state(), RunState::AwaitingApproval, "the plan can be approved again");
+
+        // Reopened a second time, there is nothing left to correct.
+        let again = Run::from_saved(
+            "r".into(),
+            "/p",
+            "req",
+            run.events(),
+            Some(run.snapshot()),
+            None,
+            Arc::new(|_: &str, _: &Event| {}),
+        );
+        assert_eq!(again.events().len(), run.events().len());
     }
 
     #[test]

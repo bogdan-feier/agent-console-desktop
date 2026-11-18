@@ -145,6 +145,7 @@ impl Orchestrator {
 
     /// The planner turns the conversation so far, or `request`, into tasks.
     pub async fn plan(&self, run: &Run, request: Option<&str>) -> Result<(), AgentError> {
+        let previous = run.state();
         run.set_state(RunState::Planning);
         let settings = self.settings();
         let spec = config::planner(&settings);
@@ -168,8 +169,17 @@ impl Orchestrator {
         let mut plan: Plan = structured_answer(run, PLANNER_ID, &output)?;
         // The schema already limits the tasks; this also covers a model that ignores it.
         plan.tasks.truncate(settings.worker_count);
+        // No tasks is an answer, not a failure: the message was a question or asked for
+        // nothing to change (Plan is easy to leave selected). Its summary says why.
         if plan.tasks.is_empty() {
-            return Err(report(run, PLANNER_ID, "The planner returned no tasks."));
+            let text = if plan.summary.trim().is_empty() {
+                "Nothing to plan here: this needs no change to the project.".to_string()
+            } else {
+                plan.summary
+            };
+            run.emit(Some(PLANNER_ID), EventKind::Text { text });
+            run.set_state(previous);
+            return Ok(());
         }
         run.set_tasks(plan.tasks.clone());
         run.set_plan_summary(plan.summary.clone());

@@ -50,6 +50,20 @@ async fn dispatcher_answers_quick_questions_itself() {
 }
 
 #[tokio::test]
+async fn a_plan_with_no_tasks_is_an_answer_not_a_failure() {
+    let collected = Collected::default();
+    let run = new_run(".", &collected);
+
+    supervised(run.clone(), instant_script().plan(&run, Some("ok, how do I run the app now?"))).await;
+
+    assert_eq!(run.state(), RunState::Ready, "the run carries on");
+    assert!(collected.of_type("error").is_empty(), "no error is shown");
+    assert!(collected.of_type("plan").is_empty(), "no empty plan card");
+    let answer = collected.of_type("text").last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(answer.contains("uv run textstats"), "{answer}");
+}
+
+#[tokio::test]
 async fn dispatcher_passes_ideas_to_the_planner_to_talk_through() {
     let collected = Collected::default();
     let run = new_run(".", &collected);

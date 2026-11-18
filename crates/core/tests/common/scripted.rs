@@ -52,7 +52,7 @@ impl AgentRunner for ScriptedRunner {
         run.emit(Some(&spec.id), EventKind::AgentModel { model: format!("scripted-{}", spec.model) });
         let (text, structured) = match (spec.role, spec.chat) {
             (Role::Dispatcher, _) => (String::new(), Some(self.dispatcher(run, spec, prompt).await)),
-            (Role::Planner, false) => (String::new(), Some(self.plan(run, spec).await)),
+            (Role::Planner, false) => (String::new(), Some(self.plan(run, spec, prompt).await)),
             (Role::Worker, false) => (self.work(run, spec, prompt).await, None),
             (Role::Reviewer, false) => (String::new(), Some(self.review(run, spec).await)),
             // The resolver never runs in these tests: nothing they script edits files.
@@ -92,7 +92,11 @@ impl ScriptedRunner {
         }
     }
 
-    async fn plan(&self, run: &Run, spec: &AgentSpec) -> Value {
+    async fn plan(&self, run: &Run, spec: &AgentSpec, prompt: &str) -> Value {
+        // A question sent with Plan selected: nothing to build, so the summary answers it.
+        if prompt.to_lowercase().contains("how do i run") {
+            return json!({ "summary": "Run it with `uv run textstats`. Nothing needs changing.", "tasks": [] });
+        }
         self.text(run, spec, "Looking at how the project is laid out.").await;
         self.tool(run, spec, "Glob", "src/**/*.py").await;
         self.tool(run, spec, "Read", "src/textstats/stats.py").await;

@@ -95,6 +95,16 @@ pub fn suggestions(dir: &Path) -> Suggestions {
     found
 }
 
+/// The check command a round runs: the one from Settings, or else the project's own
+/// usual one, so a project gets its tests run without anyone having to set it up.
+/// The flag says the command was found rather than chosen. `None`: nothing to run.
+pub fn check_command(chosen: &str, dir: &Path) -> Option<(String, bool)> {
+    if !chosen.trim().is_empty() {
+        return Some((chosen.trim().to_string(), false));
+    }
+    suggestions(dir).check.map(|found| (found, true))
+}
+
 /// The names in `package.json`'s "scripts". A file that will not parse gives
 /// none, which only means fewer suggestions.
 fn package_scripts(dir: &Path) -> Vec<String> {
@@ -110,6 +120,16 @@ fn package_scripts(dir: &Path) -> Vec<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_round_runs_the_chosen_check_or_else_the_project_s_own() {
+        let uv = project(&[("pyproject.toml", ""), ("uv.lock", "")]);
+        assert_eq!(check_command("make check", uv.path()), Some(("make check".into(), false)));
+        assert_eq!(check_command("  ", uv.path()), Some(("uv run pytest -q".into(), true)));
+        // A brand-new project has nothing to test yet, and nothing is guessed.
+        let empty = project(&[]);
+        assert_eq!(check_command("", empty.path()), None);
+    }
 
     fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

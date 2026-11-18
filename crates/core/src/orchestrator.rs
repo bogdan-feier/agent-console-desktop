@@ -28,6 +28,7 @@ use crate::config::{
     WORKER_COUNT, WORKER_ONE,
 };
 use crate::event::EventKind;
+use crate::project;
 use crate::run::{Run, RunState};
 use crate::runner::{run_agent, AgentError, AgentOutput, AgentRunner};
 use crate::settings::{self, Settings, SharedSettings};
@@ -541,12 +542,16 @@ impl Orchestrator {
 
     /// Run the project's own check command on the merged changes, if there is one.
     /// The reviewer is given the output, which saves it the turns.
+    ///
+    /// Without one in Settings, the project's usual command is used. It is looked for
+    /// in the merged changes, so the first round of a new project counts: its tests
+    /// exist by then.
     async fn run_checks(&self, run: &Run, dir: std::path::PathBuf) -> Option<Checked> {
-        let command = self.settings().check_command;
-        if command.trim().is_empty() {
-            return None;
+        let (command, found) = project::check_command(&self.settings().check_command, &dir)?;
+        let mut checked = checks::run(&dir, &command).await;
+        if found {
+            checked.note += ". The app found this command in the project; Settings can change it";
         }
-        let checked = checks::run(&dir, &command).await;
         run.emit(
             None,
             EventKind::Checks {

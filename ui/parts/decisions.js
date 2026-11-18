@@ -41,35 +41,6 @@ export function showPlan(event) {
   addToThread(box);
   refreshControls();
   reveal(box);
-  if (!app.replaying) offerCheckCommand(approve).catch(() => { /* only an offer */ });
-}
-
-/// Without a check command, a slip the tests would catch costs a review and a
-/// second worker turn to find. When the project has an obvious one, offer it here,
-/// where the round is about to start, rather than only in Settings.
-async function offerCheckCommand(approve) {
-  if (app.settings.check_command.trim() || !app.folder) return;
-  const found = await invoke("project_suggestions", { projectDir: app.folder });
-  if (!found.check) return;
-
-  const line = el("p", "hint check-offer");
-  line.append("No check command is set, so nothing runs the tests before the reviewer looks. Run ",
-    el("code", "", found.check), " on every round? ");
-  const use = button("Use it", async () => {
-    try {
-      app.settings = await invoke("save_settings", {
-        settings: { ...app.settings, check_command: found.check },
-        projectDir: app.folder,
-        ownSettings: Boolean(app.settings.own),
-      });
-      line.replaceChildren("Every round now runs ", el("code", "", found.check),
-        ". You can change it in Settings.");
-    } catch (error) {
-      showProblem(error);
-    }
-  });
-  line.append(use);
-  approve.before(line);
 }
 
 /// More files than this and the list starts folded.

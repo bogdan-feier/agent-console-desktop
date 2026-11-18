@@ -20,8 +20,8 @@ you -> dispatcher -> answers quick questions itself, sends small clear fixes to 
 Built with Rust and Tauri 2. The page is plain HTML, CSS and JavaScript shown in the
 system's own web view. Each agent is a separate `claude` session, so the target project's
 `CLAUDE.md`, hooks and `.claude/settings.json` apply to every agent, just as they do in the
-terminal. Workers can also use the skills from your installed plugins; the other agents
-leave skills and MCP servers out to save usage (see "Keeping usage down").
+terminal. The planner, workers and reviewer can also use the skills from your installed plugins; the
+dispatcher and resolver leave skills out, and every agent leaves MCP servers out, to save usage (see "Keeping usage down").
 Powered by Claude.
 
 ## First-time setup
@@ -225,11 +225,12 @@ that.
 
 **What the app does for you**
 
-- **Leaner sessions.** Agents start without your MCP servers, and every agent except the
-  workers starts without skill descriptions, which would otherwise be sent on every turn.
-  Workers keep them so they can follow the conventions your installed plugins teach. To
-  give workers only some plugins, list their folders under "Plugin folders the workers load"
-  in Settings: workers then skip your user settings and load just those. (These options are only passed if your version of Claude Code lists them in
+- **Leaner sessions.** Agents start without your MCP servers, and the dispatcher and
+  resolver start without skill descriptions, which would otherwise be sent on every turn.
+  The planner, workers and reviewer keep them so they can plan, build and review by the
+  conventions your installed plugins teach. To give them only some plugins, list their
+  folders under "Plugin folders the agents load" in Settings: they then skip your user
+  settings and load just those. (These options are only passed if your version of Claude Code lists them in
   `claude --help`, so an older version still works, just without this saving.)
 - **Dispatcher first.** Quick questions are answered by Haiku, and the Opus planner only runs
   when it is needed.

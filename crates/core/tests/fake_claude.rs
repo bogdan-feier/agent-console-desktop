@@ -315,7 +315,7 @@ async fn usage_saving_flags_reach_a_claude_that_knows_them() {
     location.known_flags = Some([NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT].map(String::from).into());
     let runner = ClaudeRunner::new(location, AuthMode::ClaudeLogin);
 
-    run_agent(&runner, &run, &config::reviewer(&Settings::default()), "x", None).await.unwrap();
+    run_agent(&runner, &run, &config::dispatcher(&Settings::default()), "x", None).await.unwrap();
 
     let args: HashSet<String> = lines(&project, "fake-args.txt").into_iter().collect();
     for expected in [NO_SKILLS, NO_MCP_SERVERS, SHARED_SYSTEM_PROMPT, "--max-turns"] {

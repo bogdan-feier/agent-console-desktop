@@ -107,9 +107,11 @@ pub struct Settings {
     /// server adds its tool descriptions to every turn of every agent, and the agents
     /// here only need file and shell tools.
     pub use_mcp_servers: bool,
-    /// Plugin folders the workers load, in place of the plugins installed in your Claude
-    /// Code. Empty means workers get your installed plugins. Listing only the ones they
-    /// need keeps every other plugin's skill descriptions out of every worker turn.
+    /// Plugin folders the agents with skills (planner, workers, reviewer) load, in place
+    /// of the plugins installed in your Claude Code. Empty means they get your installed
+    /// plugins. Listing only the ones they need keeps every other plugin's skill
+    /// descriptions out of their turns. The name predates the planner and reviewer
+    /// getting skills; it stays so saved settings still load.
     pub worker_plugins: Vec<String>,
 
     // --- Permissions ---

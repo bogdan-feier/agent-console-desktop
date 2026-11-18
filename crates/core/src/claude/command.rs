@@ -159,7 +159,7 @@ mod tests {
     fn planner_is_read_only_opus_with_a_schema() {
         let args = build_args(&config::planner(&Settings::default()), None, None);
         assert_eq!(value_after(&args, "--model"), "opus");
-        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob");
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Skill");
         assert_eq!(value_after(&args, "--permission-mode"), "dontAsk");
         assert_eq!(value_after(&args, "--max-turns"), config::PLANNER_MAX_TURNS.to_string());
         assert!(value_after(&args, "--json-schema").contains("\"tasks\""));
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn saving_flags_are_passed_only_when_claude_lists_them() {
-        let spec = config::reviewer(&Settings::default());
+        let spec = config::dispatcher(&Settings::default());
 
         let unknown = build_args(&spec, None, None);
         assert!(!has(&unknown, NO_SKILLS) && !has(&unknown, NO_MCP_SERVERS));
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn listed_plugins_replace_the_installed_ones_for_workers_only() {
+    fn listed_plugins_replace_the_installed_ones_for_agents_with_skills() {
         let settings =
             Settings { worker_plugins: vec!["/p/one".into(), "/p/two".into()], ..Settings::default() };
         let known = flags(&[PROJECT_SETTINGS_ONLY, PLUGIN_DIR]);
@@ -234,7 +234,10 @@ mod tests {
         assert_eq!(folders, ["/p/one", "/p/two"]);
 
         let planner = build_args(&config::planner(&settings), None, Some(&known));
-        assert!(!has(&planner, PROJECT_SETTINGS_ONLY) && !has(&planner, PLUGIN_DIR));
+        assert_eq!(value_after(&planner, PROJECT_SETTINGS_ONLY), "project,local");
+
+        let dispatcher = build_args(&config::dispatcher(&settings), None, Some(&known));
+        assert!(!has(&dispatcher, PROJECT_SETTINGS_ONLY) && !has(&dispatcher, PLUGIN_DIR));
 
         // A claude without --plugin-dir keeps the installed plugins rather than losing all.
         let older = build_args(&config::worker(&settings, 1), None, Some(&flags(&[PROJECT_SETTINGS_ONLY])));
@@ -268,13 +271,19 @@ mod tests {
     }
 
     #[test]
-    fn only_workers_see_the_installed_skills() {
+    fn planner_workers_and_reviewer_see_the_installed_skills() {
         let settings = Settings::default();
-        let worker = build_args(&config::worker(&settings, 1), None, Some(&all_known()));
-        assert!(!has(&worker, NO_SKILLS));
-        assert!(value_after(&worker, "--allowedTools").split(',').any(|rule| rule == "Skill"));
+        for spec in [config::planner(&settings), config::worker(&settings, 1), config::reviewer(&settings)] {
+            let args = build_args(&spec, None, Some(&all_known()));
+            assert!(!has(&args, NO_SKILLS), "{}", spec.id);
+            assert!(
+                value_after(&args, "--allowedTools").split(',').any(|rule| rule == "Skill"),
+                "{}",
+                spec.id
+            );
+        }
 
-        for spec in [config::planner(&settings), config::reviewer(&settings)] {
+        for spec in [config::dispatcher(&settings), config::resolver(&settings)] {
             let args = build_args(&spec, None, Some(&all_known()));
             assert!(has(&args, NO_SKILLS), "{}", spec.id);
             assert!(!value_after(&args, "--tools").contains("Skill"), "{}", spec.id);

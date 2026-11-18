@@ -63,7 +63,9 @@ pub const READ_TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 pub const EDIT_TOOLS: &[&str] = &["Edit", "Write"];
 pub const SHELL_TOOL: &str = "Bash";
 /// Lets an agent load a skill from the user's installed plugins when its task needs one.
-/// Only workers get it: each agent with it pays for the skill descriptions on every turn.
+/// The planner, workers and reviewer get it: the planner decides the design, so a
+/// convention it never sees cannot shape the plan, and the reviewer checks against it.
+/// Each agent with it pays for the skill descriptions on every turn.
 pub const SKILL_TOOL: &str = "Skill";
 /// Given to the dispatcher and the planner when "web access" is on in Settings.
 pub const WEB_TOOLS: &[&str] = &["WebSearch", "WebFetch"];
@@ -197,6 +199,9 @@ Rules for the plan:
   surprise it. Write only what you actually read, and say where you read it. Do not
   guess, do not paste whole files, and do not repeat the instructions.
 - Prefer the simplest design that satisfies the request. Do not add scope.
+- If one of your skills covers this kind of work (an architecture, a framework, a house
+  style), load it before you design, follow it in the plan, and name it in each task's
+  instructions so the worker loads it too. The project's own files outrank a skill.
 
 Work economically: find things with Grep and Glob before reading, read only the parts of
 files you need, and do not re-read files you have already seen in this session.";
@@ -232,8 +237,9 @@ Steps:
    do not give enough context.
 2. Run the project's tests once, so you see how the tasks work together.
 3. Check each task: does it do what was asked and nothing extra? Is the new behaviour tested?
-   Edge cases (empty input, None, large input)? Does it follow the project's CLAUDE.md?
-   Also check that the tasks fit together.
+   Edge cases (empty input, None, large input)? Does it follow the project's CLAUDE.md,
+   and any skill the plan names? Load that skill to check. Also check that the tasks fit
+   together.
 
 Work economically: read only what you need, and run the tests once unless something changed.
 
@@ -597,6 +603,16 @@ fn shell_access(settings: &Settings, extra: &[&str]) -> (Vec<String>, Vec<String
     (tools, allowed, denied)
 }
 
+/// Adds the Skill tool, and loads the plugin folders from Settings instead of the
+/// installed plugins when any are listed.
+fn with_skills(spec: AgentSpec, settings: &Settings) -> AgentSpec {
+    let mut spec = spec;
+    spec.tools.push(SKILL_TOOL.to_string());
+    spec.allowed.push(SKILL_TOOL.to_string());
+    spec.plugin_dirs = settings.worker_plugins.clone();
+    spec
+}
+
 fn chat_turns(settings: &Settings) -> u32 {
     settings.chat_max_turns.unwrap_or(CHAT_MAX_TURNS)
 }
@@ -625,7 +641,7 @@ pub fn dispatcher(settings: &Settings) -> AgentSpec {
 
 /// The planner when it turns the request (or the conversation so far) into a plan.
 pub fn planner(settings: &Settings) -> AgentSpec {
-    AgentSpec {
+    let spec = AgentSpec {
         id: PLANNER_ID.to_string(),
         role: Role::Planner,
         label: "Planner".to_string(),
@@ -642,7 +658,8 @@ pub fn planner(settings: &Settings) -> AgentSpec {
         plugin_dirs: Vec::new(),
         sandboxed: false,
         chat: false,
-    }
+    };
+    with_skills(spec, settings)
 }
 
 /// The planner while brainstorming with the user: same tools, free-form answers.
@@ -658,10 +675,8 @@ pub fn planner_chat(settings: &Settings) -> AgentSpec {
 
 /// Worker `number`, counting from 1.
 pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
-    let (mut tools, mut allowed, denied) = shell_access(settings, EDIT_TOOLS);
-    tools.push(SKILL_TOOL.to_string());
-    allowed.push(SKILL_TOOL.to_string());
-    AgentSpec {
+    let (tools, allowed, denied) = shell_access(settings, EDIT_TOOLS);
+    let spec = AgentSpec {
         id: format!("worker-{number}"),
         role: Role::Worker,
         label: format!("Worker {number}"),
@@ -675,10 +690,11 @@ pub fn worker(settings: &Settings, number: usize) -> AgentSpec {
         max_budget_usd: settings.max_budget_usd,
         max_turns: settings.worker.max_turns.unwrap_or(WORKER_MAX_TURNS),
         use_mcp_servers: settings.use_mcp_servers,
-        plugin_dirs: settings.worker_plugins.clone(),
+        plugin_dirs: Vec::new(),
         sandboxed: settings.full_shell,
         chat: false,
-    }
+    };
+    with_skills(spec, settings)
 }
 
 /// Worker `number` when the user talks to it directly.
@@ -694,7 +710,7 @@ pub fn worker_chat(settings: &Settings, number: usize) -> AgentSpec {
 /// The reviewer, which checks all the workers' changes together.
 pub fn reviewer(settings: &Settings) -> AgentSpec {
     let (tools, allowed, denied) = shell_access(settings, &[]);
-    AgentSpec {
+    let spec = AgentSpec {
         id: REVIEWER_ID.to_string(),
         role: Role::Reviewer,
         label: "Reviewer".to_string(),
@@ -711,7 +727,8 @@ pub fn reviewer(settings: &Settings) -> AgentSpec {
         plugin_dirs: Vec::new(),
         sandboxed: settings.full_shell,
         chat: false,
-    }
+    };
+    with_skills(spec, settings)
 }
 
 /// The resolver, which only runs when two workers' changes clash. It uses the

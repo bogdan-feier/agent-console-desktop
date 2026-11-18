@@ -142,8 +142,9 @@ across rounds; workers and the reviewer only within their round.
 
 - `claude/command.rs` adds `--disable-slash-commands`, `--strict-mcp-config` and
   `--exclude-dynamic-system-prompt-sections` when the installed `claude` lists them.
-  Workers have the `Skill` tool, so they do not get `--disable-slash-commands`. When
-  Settings lists worker plugin folders, workers get `--setting-sources project,local`
+  The planner, workers and reviewer have the `Skill` tool, so they do not get
+  `--disable-slash-commands`: the planner must see a convention to plan by it. When
+  Settings lists plugin folders, those three get `--setting-sources project,local`
   and one `--plugin-dir` per folder instead of the user's installed plugins.
 - `claude/command.rs` (`environment`) starts workers, the reviewer and the resolver with
   `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`. Writing to the default one-hour cache costs twice the

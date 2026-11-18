@@ -52,6 +52,12 @@ async function sendMain() {
       await show(id);
     }
     $("message").value = "";
+    // Plan and Quick are one-off actions. Left selected, the next question would be
+    // planned or built instead of answered, so the box goes back to Ask.
+    if (chosen === "plan" || chosen === "quick") {
+      document.querySelector("input[name=mode][value=dispatcher]").checked = true;
+      refreshPlaceholder();
+    }
     refreshPrompts();
   } catch (error) {
     showProblem(error);

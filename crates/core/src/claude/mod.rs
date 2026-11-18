@@ -316,14 +316,26 @@ fn tool_error_detail(result_text: &str, command: Option<&str>) -> String {
 /// "npm run lint --fix" -> "npm run *", "pytest -q" -> "pytest *".
 ///
 /// The program, plus its first word if that word is a subcommand rather than an
-/// option, and then anything. Narrow enough to be worth seeing before you agree
-/// to it, wide enough to be worth agreeing to.
+/// option or a file, and then anything. Narrow enough to be worth seeing before you
+/// agree to it, wide enough to be worth agreeing to. In a chain (`cd x && uv remove
+/// y`) it is the first command that does real work: `cd`, `export` and variables set
+/// for one command are only setting the scene.
 fn allow_rule(command: &str) -> Option<String> {
-    let mut words = command.split_whitespace();
+    let part = command
+        .split(['\n', ';', '&', '|'])
+        .map(str::trim)
+        .find(|part| !part.is_empty() && !is_scene_setting(part))?;
+    // `cat > notes.txt` writes a file: a rule for `cat` would not be about that.
+    if part.contains(['>', '<', '`', '$']) {
+        return None;
+    }
+    let mut words = without_variables(part);
     let program = words.next()?;
     let mut rule = program.to_string();
     if let Some(second) = words.next() {
-        if !second.starts_with('-') {
+        let is_subcommand = !second.starts_with('-')
+            && second.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if is_subcommand {
             rule.push(' ');
             rule.push_str(second);
         }
@@ -334,6 +346,17 @@ fn allow_rule(command: &str) -> Option<String> {
         return None;
     }
     Some(rule + " *")
+}
+
+/// `cd src`, `export A=1`, `A=1`, `pwd`: commands that only set up the next one,
+/// so no rule for them is worth offering.
+fn is_scene_setting(part: &str) -> bool {
+    matches!(without_variables(part).next(), None | Some("cd" | "export" | "pwd" | "set"))
+}
+
+/// The words of a command after any `NAME=value` set just for it.
+fn without_variables(part: &str) -> impl Iterator<Item = &str> {
+    part.split_whitespace().skip_while(|word| word.contains('='))
 }
 
 fn shorten(text: &str) -> String {
@@ -357,6 +380,25 @@ mod tests {
         assert_eq!(refused_command(refused, None), None);
         // A rule we could not store safely is not offered at all.
         assert_eq!(refused_command(refused, Some("foo(bar)")), None);
+    }
+
+    #[test]
+    fn rules_are_offered_for_the_command_that_does_the_work() {
+        // Refused commands from real runs, and the rule worth offering for each.
+        let rule = |command: &str| allow_rule(command);
+        assert_eq!(rule("uv remove pytest ruff && uv add --dev pytest ruff"), Some("uv remove *".into()));
+        assert_eq!(rule("git rm -r --cached src/__pycache__"), Some("git rm *".into()));
+        // A file is not a subcommand: allowing `rm tests/test_store.py *` helps nobody.
+        assert_eq!(rule("rm tests/test_store.py tests/test_report.py"), Some("rm *".into()));
+        assert_eq!(
+            rule("cd /tmp/agent-console/round3/worker-1/src && mkdir -p ../tests"),
+            Some("mkdir *".into())
+        );
+        assert_eq!(rule("export GLOVEBOX_DB=/tmp/gb.db; uv run glovebox list"), Some("uv run *".into()));
+        assert_eq!(rule("GLOVEBOX_DB=/tmp/gb.db uv run glovebox"), Some("uv run *".into()));
+        assert_eq!(rule("pwd && ls -la && uv --version"), Some("ls *".into()));
+        // Writing a file through the shell is not what a rule for `cat` would mean.
+        assert_eq!(rule("cat > domain/scoreboard.py <<'EOF'"), None);
     }
 
     #[test]

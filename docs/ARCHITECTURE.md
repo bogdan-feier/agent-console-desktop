@@ -174,7 +174,9 @@ already confines them.
 - Every session has `--max-turns` (from `config.rs`) and `--max-budget-usd` (from Settings).
   When one stops at a limit, `ClaudeRunner` still keeps its session, so a message continues it.
 - The `result` event carries the session's token counts (`TokenUsage` in `event.rs`), which
-  the page shows per agent and in total.
+  the page shows per agent and in total. Its cost is only what that call added: a resumed
+  session reports everything it has cost so far, so `Run::new_cost` subtracts the total it
+  reported last time.
 
 ## Settings
 

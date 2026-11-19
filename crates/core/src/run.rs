@@ -91,6 +91,10 @@ pub struct Snapshot {
     pub plan_summary: String,
     /// Agent ID -> the session `claude --resume` continues.
     pub sessions: HashMap<String, String>,
+    /// Session ID -> the cost `claude` last reported for it. `#[serde(default)]` so
+    /// runs saved before this field existed still load.
+    #[serde(default)]
+    pub session_costs: HashMap<String, f64>,
     pub rounds_started: usize,
     pub round: Option<RoundSnapshot>,
 }
@@ -127,6 +131,9 @@ struct Inner {
     /// Agent ID -> its latest session ID, so the agent can be resumed and
     /// remembers the conversation (for a fix, or when the user talks to it).
     sessions: HashMap<String, String>,
+    /// Session ID -> the cost `claude` last reported for it. A resumed session
+    /// reports everything it has cost so far, not just the latest call.
+    session_costs: HashMap<String, f64>,
     round: Option<Round>,
     rounds_started: usize,
     /// Present while a phase is running; sending on it stops that phase.
@@ -148,6 +155,7 @@ impl Run {
                 plan_summary: String::new(),
                 running_agents: BTreeSet::new(),
                 sessions: HashMap::new(),
+                session_costs: HashMap::new(),
                 round: None,
                 rounds_started: 0,
                 stop_signal: None,
@@ -163,6 +171,7 @@ impl Run {
             tasks: inner.tasks.clone(),
             plan_summary: inner.plan_summary.clone(),
             sessions: inner.sessions.clone(),
+            session_costs: inner.session_costs.clone(),
             rounds_started: inner.rounds_started,
             round: inner.round.as_ref().map(|round| RoundSnapshot {
                 quick: round.quick,
@@ -210,6 +219,7 @@ impl Run {
             tasks: Vec::new(),
             plan_summary: String::new(),
             sessions: HashMap::new(),
+            session_costs: HashMap::new(),
             rounds_started: 0,
             round: None,
         });
@@ -233,6 +243,7 @@ impl Run {
                 plan_summary: saved.plan_summary,
                 running_agents: BTreeSet::new(),
                 sessions: saved.sessions,
+                session_costs: saved.session_costs,
                 round,
                 rounds_started: saved.rounds_started,
                 stop_signal: None,
@@ -365,6 +376,15 @@ impl Run {
 
     pub(crate) fn record_session(&self, agent: &str, session: String) {
         self.lock().sessions.insert(agent.to_string(), session);
+    }
+
+    /// What this call of a session cost, given the total `claude` reported. A resumed
+    /// session's total includes every earlier call, which the run has already counted.
+    pub(crate) fn new_cost(&self, session: Option<&str>, total: Option<f64>) -> Option<f64> {
+        let total = total?;
+        let Some(session) = session else { return Some(total) };
+        let before = self.lock().session_costs.insert(session.to_string(), total).unwrap_or(0.0);
+        Some((total - before).max(0.0))
     }
 
     /// Forget an agent's session, so its next message starts a conversation from
@@ -585,6 +605,7 @@ mod tests {
             tasks: vec![task("Add a button")],
             plan_summary: String::new(),
             sessions: HashMap::new(),
+            session_costs: HashMap::new(),
             rounds_started: 8,
             round: None,
         };
@@ -636,5 +657,22 @@ mod tests {
         run.set_tasks(vec![task("store part")]);
         run.open_round(None, false);
         assert_eq!(run.suggested_commit_message(), "Add remove-car");
+    }
+
+    #[test]
+    fn a_resumed_session_counts_only_what_it_added() {
+        let run = Run::new("/p", "Why?", Arc::new(|_: &str, _: &Event| {}));
+        // The totals `claude` reported for one session resumed twice.
+        let costs: Vec<_> = [0.131, 0.1485, 0.157].map(|total| run.new_cost(Some("s1"), Some(total))).into();
+        let costs: Vec<f64> =
+            costs.into_iter().flatten().map(|cost| (cost * 10_000.0).round() / 10_000.0).collect();
+        assert_eq!(costs, [0.131, 0.0175, 0.0085]);
+        // Another session starts from nothing, and so does a session after a restart.
+        assert_eq!(run.new_cost(Some("s2"), Some(0.05)), Some(0.05));
+        let saved = run.snapshot();
+        assert_eq!(saved.session_costs.get("s1"), Some(&0.157));
+        // A total with no session to compare against is taken as it is.
+        assert_eq!(run.new_cost(None, Some(0.2)), Some(0.2));
+        assert_eq!(run.new_cost(Some("s1"), None), None);
     }
 }

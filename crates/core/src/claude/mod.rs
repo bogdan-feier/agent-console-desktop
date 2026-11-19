@@ -226,7 +226,7 @@ impl AgentRunner for ClaudeRunner {
         };
         // Report what the session used, whether it succeeded or stopped at a limit.
         let usage = EventKind::Result {
-            cost_usd: result.total_cost_usd,
+            cost_usd: run.new_cost(result.session_id.as_deref(), result.total_cost_usd),
             turns: result.num_turns,
             tokens: result.usage,
         };

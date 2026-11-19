@@ -30,7 +30,7 @@ function inline(text) {
 }
 
 const BULLET = /^\s*[-*+]\s+(.*)$/;
-const NUMBER = /^\s*\d+[.)]\s+(.*)$/;
+const NUMBER = /^\s*(\d+)[.)]\s+(.*)$/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
 
 /// Everything that is not a fenced code block: headings, lists, paragraphs.
@@ -48,10 +48,12 @@ function prose(text) {
     if (list) html.push("</" + list + ">");
     list = null;
   };
-  const openList = (kind) => {
+  // `start` keeps the agent's own numbers: planners put a blank line between steps,
+  // which closes the list, and a list opened again would count from 1 each time.
+  const openList = (kind, start) => {
     if (list !== kind) {
       endList();
-      html.push("<" + kind + ">");
+      html.push(start > 1 ? '<ol start="' + start + '">' : "<" + kind + ">");
       list = kind;
     }
   };
@@ -71,8 +73,9 @@ function prose(text) {
       html.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
     } else if (bullet || numbered) {
       endParagraph();
-      openList(bullet ? "ul" : "ol");
-      html.push("<li>" + inline((bullet || numbered)[1]) + "</li>");
+      if (bullet) openList("ul");
+      else openList("ol", Number(numbered[1]));
+      html.push("<li>" + inline(bullet ? bullet[1] : numbered[2]) + "</li>");
     } else {
       endList();
       paragraph.push(line);

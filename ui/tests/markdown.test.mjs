@@ -65,3 +65,11 @@ test("an unclosed fence does not swallow the rest", () => {
   assert.ok(rendered.includes("<p>before</p>"));
   assert.ok(rendered.includes("still code"));
 });
+
+test("numbered steps keep their numbers across blank lines", () => {
+  // How planners write task instructions: a blank line between steps.
+  const rendered = render("1. Add the column.\n\n2. Add the route.\n\n3. Add the tests.");
+  assert.ok(rendered.startsWith("<ol><li>Add the column."), rendered);
+  assert.ok(rendered.includes('<ol start="2"><li>Add the route.'), rendered);
+  assert.ok(rendered.includes('<ol start="3"><li>Add the tests.'), rendered);
+});

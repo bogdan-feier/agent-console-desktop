@@ -25,7 +25,12 @@ function buildCard(agent) {
   const titleRow = el("div", "title-row");
   const status = el("span", "status");
   status.append(el("span", "dot"), el("span", "status-word"));
-  titleRow.append(el("h2", "", agent.label), status);
+  // A card is a third of the window, too narrow for a long report: Expand lifts it
+  // over the page at nearly full size, and Escape or the same button puts it back.
+  const expand = el("button", "quiet expand", "Expand");
+  expand.type = "button";
+  expand.addEventListener("click", () => setExpanded(root, expand, !root.classList.contains("expanded")));
+  titleRow.append(el("h2", "", agent.label), status, expand);
   const task = el("div", "task-title");
   header.append(titleRow, el("div", "model"), task);
   const log = el("div", "log");
@@ -73,6 +78,19 @@ function buildCard(agent) {
     input,
   };
 }
+
+function setExpanded(root, button, on) {
+  for (const open of document.querySelectorAll(".card.expanded")) {
+    if (open !== root) setExpanded(open, open.querySelector(".expand"), false);
+  }
+  root.classList.toggle("expanded", on);
+  button.textContent = on ? "Close" : "Expand";
+}
+
+document.addEventListener("keydown", (key) => {
+  const open = document.querySelector(".card.expanded");
+  if (key.key === "Escape" && open) setExpanded(open, open.querySelector(".expand"), false);
+});
 
 export function clearCards() {
   clearTurns();

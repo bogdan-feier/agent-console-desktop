@@ -248,6 +248,18 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--sunken); p
 .card[data-status=error] .status { color: var(--bad); }
 .card[data-status=error] .dot { background: var(--bad); }
 .card .task-title { font-size: 13.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* On a narrow card the status word gives way, so the Expand button always stays visible. */
+.card .expand { flex: none; padding: 1px 8px; font-size: 12px; }
+.card .status { min-width: 8px; overflow: hidden; white-space: nowrap; }
+.card .status .dot { flex: none; }
+.card header { grid-template-columns: minmax(0, 1fr); }
+/* The huge shadow dims the rest of the page, so no separate backdrop is needed. */
+.card.expanded {
+  position: fixed; inset: 4vh 6vw; z-index: 30;
+  box-shadow: 0 0 0 100vmax rgba(10, 14, 20, 0.45), 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+.card.expanded .task-title { white-space: normal; }
+.card.expanded .log { font-size: 15px; padding: 14px 20px; }
 .card .log { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .card .empty { color: var(--muted); font-size: 14px; margin: 0; }
 .card .you { font-size: 14px; }

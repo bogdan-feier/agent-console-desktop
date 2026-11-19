@@ -10,7 +10,8 @@
 //!   its worktree, so `git rm` works. Not the rest of the repository's `.git`, whose
 //!   config and hooks the app's own git commands would run outside the sandbox.
 //!   Not the other workers' folders of the same round.
-//! - Reads: everything except secrets: `.env` files and the usual credential folders.
+//! - Reads: everything except secrets: `.env` files (but not placeholders such as
+//!   `.env.example`) and the usual credential folders.
 //! - Network: package registries, so `uv add` or `npm install` work, and servers
 //!   on this machine, so an agent can start the app it built and call it. No other
 //!   host can be reached.
@@ -47,7 +48,22 @@ const SECRET_FOLDERS: &[&str] =
 
 /// The same as permission rules: these also stop the Read tool, which does not run
 /// in the sandbox, and Claude Code merges them into the sandbox's read limits.
-const SECRET_READS: &[&str] = &["Read(**/.env)", "Read(**/.env.*)", "Read(~/.netrc)"];
+/// A Read deny also stops Write and Edit, and no allow rule can undo it, so the env
+/// files are named one by one: `.env.*` would also lock out `.env.example`, the
+/// placeholder file a project is meant to commit.
+// ponytail: a secrets file with an unusual name (`.env.mine`) is readable; name it here if one turns up.
+const SECRET_READS: &[&str] = &[
+    "Read(**/.env)",
+    "Read(**/.env.local)",
+    "Read(**/.env.*.local)",
+    "Read(**/.env.dev)",
+    "Read(**/.env.development)",
+    "Read(**/.env.test)",
+    "Read(**/.env.staging)",
+    "Read(**/.env.prod)",
+    "Read(**/.env.production)",
+    "Read(~/.netrc)",
+];
 
 /// The `--settings` value for one sandboxed session. `git_dir` is the agent's real
 /// git folder, when it has one; `others` are folders it must not write to.
@@ -108,7 +124,10 @@ mod tests {
         assert!(sandbox["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/.ssh")));
         assert!(sandbox["network"]["allowedDomains"].as_array().unwrap().contains(&json!("pypi.org")));
         assert_eq!(sandbox["network"]["allowLocalBinding"], true, "it may run the app it built");
-        assert!(value["permissions"]["deny"].as_array().unwrap().contains(&json!("Read(**/.env)")));
+        let deny = value["permissions"]["deny"].as_array().unwrap();
+        assert!(deny.contains(&json!("Read(**/.env)")) && deny.contains(&json!("Read(**/.env.production)")));
+        // A wildcard would also block writing the placeholder a project commits.
+        assert!(!deny.iter().any(|rule| rule.as_str().unwrap().contains("*)")), "{deny:?}");
     }
 
     #[test]

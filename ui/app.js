@@ -124,7 +124,12 @@ function handle(event) {
     case "tool_error":
       if (event.allow_rule) (agent.refused ??= new Set()).add(event.allow_rule);
       addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
-    case "notice": place(agent, el("div", "note", event.text)); break;
+    case "notice": {
+      // Runs saved before the outside_task event wrote the files into a sentence.
+      const old = event.text.match(OLD_OUTSIDE_TASK);
+      place(agent, old ? outsideTask(old[1].split(", ")) : el("div", "note", event.text));
+      break;
+    }
     case "outside_task": place(agent, outsideTask(event.files)); break;
     case "error": place(agent, problemBox(event)); break;
     case "result":
@@ -135,6 +140,8 @@ function handle(event) {
     case "review": showReview(agent, event); break;
   }
 }
+
+const OLD_OUTSIDE_TASK = /^Also changed files outside its task: (.+?)\. If another worker changed them too/;
 
 /// The files a worker changed beyond its task, folded: one line on the card, the list
 /// when you open it.

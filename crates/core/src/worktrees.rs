@@ -260,7 +260,7 @@ impl Workspace {
         // they run when you commit the applied changes yourself.
         let commit = [COMMIT_SETTINGS, &["commit", "-q", "--no-verify", "-m", &message]].concat();
         git(&dir, &commit).await?;
-        let outside_task = changed.iter().filter(|file| !task_files.contains(file)).cloned().collect();
+        let outside_task = changed.iter().filter(|file| !in_task(task_files, file)).cloned().collect();
         Ok(WorkerCommit { changed, outside_task })
     }
 
@@ -614,6 +614,32 @@ fn cut_to(text: String, limit: usize) -> String {
     format!("{kept}\n... (this file's changes are too long to show in full)")
 }
 
+/// Whether `file` is one of the task's files. A planner names files exactly, or, for
+/// files that do not exist yet, a folder: `frontend`, `frontend/` or a pattern such as
+/// `frontend/**` (any depth) or `src/*.ts` (`*` stays inside one folder).
+fn in_task(task_files: &[String], file: &str) -> bool {
+    task_files.iter().any(|entry| {
+        let folder = entry.trim_end_matches('/');
+        entry == file
+            || file.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+            || (entry.contains('*') && glob_matches(entry.as_bytes(), file.as_bytes()))
+    })
+}
+
+/// `*` matches within one folder, `**` across folders; anything else matches itself.
+fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern {
+        [] => text.is_empty(),
+        // `**/` also matches no folder at all, so `src/**/a.ts` covers `src/a.ts`.
+        [b'*', b'*', b'/', rest @ ..] if glob_matches(rest, text) => true,
+        [b'*', b'*', rest @ ..] => (0..=text.len()).any(|skip| glob_matches(rest, &text[skip..])),
+        [b'*', rest @ ..] => (0..=text.len())
+            .take_while(|&skip| skip == 0 || text[skip - 1] != b'/')
+            .any(|skip| glob_matches(rest, &text[skip..])),
+        [first, rest @ ..] => text.first() == Some(first) && glob_matches(rest, &text[1..]),
+    }
+}
+
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -655,6 +681,28 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_task_names_its_files_exactly_or_by_folder() {
+        let task: Vec<String> =
+            ["frontend/**", "README.md", "src/api", "tests/*.py", "lib/**/x.rs"].map(String::from).into();
+        for inside in [
+            "frontend/package.json",
+            "frontend/src/api/client.ts",
+            "README.md",
+            "src/api/routes.py",
+            "tests/test_loans.py",
+            "lib/x.rs",
+            "lib/a/b/x.rs",
+        ] {
+            assert!(in_task(&task, inside), "{inside} is in the task");
+        }
+        for outside in
+            ["frontend.ts", "README.md.bak", "src/apis.py", "tests/unit/test_a.py", "lib/y.rs", "CLAUDE.md"]
+        {
+            assert!(!in_task(&task, outside), "{outside} is not in the task");
+        }
+    }
 
     fn run_git(dir: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")

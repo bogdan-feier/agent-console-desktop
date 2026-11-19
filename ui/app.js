@@ -125,6 +125,7 @@ function handle(event) {
       if (event.allow_rule) (agent.refused ??= new Set()).add(event.allow_rule);
       addStep(agent, refusedStep(agent, event), "Refused or failed: " + event.detail); break;
     case "notice": place(agent, el("div", "note", event.text)); break;
+    case "outside_task": place(agent, outsideTask(event.files)); break;
     case "error": place(agent, problemBox(event)); break;
     case "result":
       showUsage(agent, event);
@@ -133,6 +134,17 @@ function handle(event) {
     case "plan": showPlan(event); break;
     case "review": showReview(agent, event); break;
   }
+}
+
+/// The files a worker changed beyond its task, folded: one line on the card, the list
+/// when you open it.
+function outsideTask(files) {
+  const fold = el("details", "note outside-task");
+  fold.append(el("summary", "", "Also changed " + plural(files.length, "file") + " outside its task"));
+  const list = el("ul");
+  for (const file of files) list.append(el("li", "", file));
+  fold.append(list, el("div", "", "If another worker changed them too, merging their work will fail."));
+  return fold;
 }
 
 /// Something went wrong. When the app can clear it up itself, offer that: a folder

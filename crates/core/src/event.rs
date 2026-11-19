@@ -38,6 +38,11 @@ pub enum EventKind {
     Notice {
         text: String,
     },
+    /// A worker changed files its task did not list. A list rather than a sentence, so
+    /// the page can fold it: a worker that sets up a new project changes dozens.
+    OutsideTask {
+        files: Vec<String>,
+    },
     /// A round of work (worktrees with changes) was opened or closed. While one is
     /// open, the page offers Apply, Discard and Review again.
     Round {
@@ -143,6 +148,20 @@ mod tests {
             serde_json::to_value(&event).unwrap(),
             json!({"seq": 4, "agent": "worker-1", "type": "tool", "name": "Read", "detail": "a.py"})
         );
+    }
+
+    #[test]
+    fn files_outside_a_task_are_saved_and_read_back_as_a_list() {
+        let files = vec!["a.ts".to_string(), "b.ts".to_string()];
+        let event =
+            Event { seq: 2, agent: Some("worker-1".to_string()), kind: EventKind::OutsideTask { files } };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            json!({"seq": 2, "agent": "worker-1", "type": "outside_task", "files": ["a.ts", "b.ts"]})
+        );
+        let read: Event = serde_json::from_value(value).unwrap();
+        assert!(matches!(read.kind, EventKind::OutsideTask { files } if files.len() == 2));
     }
 
     #[test]

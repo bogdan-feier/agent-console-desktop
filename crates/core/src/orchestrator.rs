@@ -599,12 +599,7 @@ impl Orchestrator {
             // In a quick change there is no file list and no other worker, so there is
             // no "outside its task" to be outside of.
             Ok(commit) if !commit.outside_task.is_empty() && !run.round_is_quick() => {
-                let text = format!(
-                    "Also changed files outside its task: {}. If another worker changed them too, \
-                     merging their work will fail.",
-                    few_of(&commit.outside_task)
-                );
-                run.emit(Some(&agent), EventKind::Notice { text });
+                run.emit(Some(&agent), EventKind::OutsideTask { files: commit.outside_task });
             }
             Ok(_) => {}
             Err(problem) => {
@@ -1010,19 +1005,6 @@ fn commit_style(subjects: &[String]) -> String {
     format!("\n\nThis project's recent commit subjects, for the style of yours:\n{examples}")
 }
 
-/// Most files a notice names before it says how many more there are. A worker that
-/// sets up a new project changes dozens, and a card is too narrow to list them all.
-const LISTED_FILES: usize = 5;
-
-/// `files` joined for a notice, cut to [`LISTED_FILES`] with a count of the rest.
-fn few_of(files: &[String]) -> String {
-    let shown = files[..files.len().min(LISTED_FILES)].join(", ");
-    match files.len().saturating_sub(LISTED_FILES) {
-        0 => shown,
-        rest => format!("{shown} and {rest} more"),
-    }
-}
-
 /// The first line of the user's message, for the task's title.
 fn first_line(message: &str) -> String {
     message.lines().find(|line| !line.trim().is_empty()).unwrap_or(message).trim().to_string()
@@ -1031,14 +1013,6 @@ fn first_line(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_long_file_list_in_a_notice_is_cut_short() {
-        let files = |count: usize| (1..=count).map(|n| format!("f{n}.ts")).collect::<Vec<_>>();
-        assert_eq!(few_of(&files(2)), "f1.ts, f2.ts");
-        assert_eq!(few_of(&files(5)), "f1.ts, f2.ts, f3.ts, f4.ts, f5.ts");
-        assert_eq!(few_of(&files(42)), "f1.ts, f2.ts, f3.ts, f4.ts, f5.ts and 37 more");
-    }
 
     #[test]
     fn only_waiting_changes_in_the_same_project_stop_a_new_run() {
